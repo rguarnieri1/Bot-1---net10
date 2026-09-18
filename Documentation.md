@@ -1,10 +1,10 @@
 # Documentazione - Bot 1 (BotCripto v1.1)
 
-Documentazione tecnica basata sul codice sorgente attuale del progetto `1 - Bot Cripto` (namespace `BotCripto`, target `.NET 8.0`).
+Documentazione tecnica basata sul codice sorgente attuale del progetto `1 - Bot Cripto` (namespace `BotCripto`, target `.NET 10.0`).
 
 ## 1. Panoramica
 
-Bot 1 è un'applicazione console .NET 8 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per capitalizzazione ≥ $500.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
+Bot 1 è un'applicazione console .NET 10 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per capitalizzazione ≥ $500.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
 
 Punto di ingresso: `Program.cs`.
 
@@ -181,9 +181,9 @@ File di configurazione "di progetto" con schema più ampio (strategie, risk mana
 
 ## 13. Dipendenze principali (`1 - Bot Cripto.csproj`)
 
-- Target framework: `.NET 8.0`, `Nullable` e `ImplicitUsings` abilitati.
+- Target framework: `.NET 10.0`, `Nullable` e `ImplicitUsings` abilitati.
 - `Newtonsoft.Json` 13.0.4 — serializzazione JSON (trade, risposte API).
-- `System.Net.Http` 4.3.4, `System.Runtime.InteropServices` 4.3.0.
+- Nessun pacchetto di compatibilità aggiuntivo: `System.Net.Http` e `System.Runtime.InteropServices` (necessari sotto .NET 8) sono stati rimossi nel porting a .NET 10 perché superati dal runtime moderno.
 
 ## 14. Limitazioni note / debito tecnico osservato nel codice
 
