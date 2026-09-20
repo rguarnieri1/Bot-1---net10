@@ -9,7 +9,6 @@ public class CryptoDataService
     private const string BaseUrl = "https://api.crypto.com/v2";
     private const string BybitBaseUrl = "https://api.bybit.com/v5";
     private const string CoinGeckoBaseUrl = "https://api.coingecko.com/api/v3";
-    private const decimal MinMarketCapUsd = 500_000m;
     private const decimal MinVolume24hUsd = 5_000_000m;
     private readonly List<string> _largeCapCryptos = new();
     private int _apiCallCount = 0;
@@ -26,14 +25,14 @@ public class CryptoDataService
 
     public async Task<List<Cryptocurrency>> GetLargeCapCryptocurrenciesAsync()
     {
-        var marketData = await GetMarketDataAsync();
+        var volumes = await GetVolumesAsync();
 
         // Tenta Crypto.com
         var cryptoComData = await TryGetCryptoComTickers();
         if (cryptoComData != null && cryptoComData.Count > 0)
         {
-            var filtered = FilterByMarketCapAndVolume(cryptoComData, marketData);
-            Console.WriteLine($"✅ Caricate {filtered.Count} criptovalute da API Crypto.com (capitalizzazione ≥ ${MinMarketCapUsd:N0}, volume 24h ≥ ${MinVolume24hUsd:N0})");
+            var filtered = FilterByVolume(cryptoComData, volumes);
+            Console.WriteLine($"✅ Caricate {filtered.Count} criptovalute da API Crypto.com (volume 24h ≥ ${MinVolume24hUsd:N0})");
             return filtered;
         }
 
@@ -42,8 +41,8 @@ public class CryptoDataService
         var bybitData = await TryGetBybitTickers();
         if (bybitData != null && bybitData.Count > 0)
         {
-            var filtered = FilterByMarketCapAndVolume(bybitData, marketData);
-            Console.WriteLine($"✅ Caricate {filtered.Count} criptovalute da API Bybit (capitalizzazione ≥ ${MinMarketCapUsd:N0}, volume 24h ≥ ${MinVolume24hUsd:N0})");
+            var filtered = FilterByVolume(bybitData, volumes);
+            Console.WriteLine($"✅ Caricate {filtered.Count} criptovalute da API Bybit (volume 24h ≥ ${MinVolume24hUsd:N0})");
             return filtered;
         }
 
@@ -52,22 +51,19 @@ public class CryptoDataService
         return GetDemoData();
     }
 
-    private List<Cryptocurrency> FilterByMarketCapAndVolume(List<Cryptocurrency> cryptos, Dictionary<string, (decimal MarketCap, decimal Volume24h)> marketData)
+    private List<Cryptocurrency> FilterByVolume(List<Cryptocurrency> cryptos, Dictionary<string, decimal> volumes)
     {
-        if (marketData.Count == 0)
+        if (volumes.Count == 0)
         {
-            Console.WriteLine("   ⚠️  Dati di mercato non disponibili (CoinGecko irraggiungibile): filtri capitalizzazione/volume saltati per questo ciclo");
+            Console.WriteLine("   ⚠️  Dati di volume non disponibili (CoinGecko irraggiungibile): filtro volume saltato per questo ciclo");
             return cryptos;
         }
 
         var result = new List<Cryptocurrency>();
         foreach (var crypto in cryptos)
         {
-            if (marketData.TryGetValue(crypto.Symbol, out var data) &&
-                data.MarketCap >= MinMarketCapUsd &&
-                data.Volume24h >= MinVolume24hUsd)
+            if (volumes.TryGetValue(crypto.Symbol, out var volume24h) && volume24h >= MinVolume24hUsd)
             {
-                crypto.MarketCap = data.MarketCap;
                 result.Add(crypto);
             }
         }
@@ -75,9 +71,9 @@ public class CryptoDataService
         return result;
     }
 
-    private async Task<Dictionary<string, (decimal MarketCap, decimal Volume24h)>> GetMarketDataAsync()
+    private async Task<Dictionary<string, decimal>> GetVolumesAsync()
     {
-        var marketData = new Dictionary<string, (decimal MarketCap, decimal Volume24h)>(StringComparer.OrdinalIgnoreCase);
+        var volumes = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -98,19 +94,19 @@ public class CryptoDataService
                 foreach (var coin in coins)
                 {
                     var symbol = coin.Symbol?.ToUpperInvariant();
-                    if (string.IsNullOrEmpty(symbol) || marketData.ContainsKey(symbol))
+                    if (string.IsNullOrEmpty(symbol) || volumes.ContainsKey(symbol))
                         continue;
 
-                    marketData[symbol] = (coin.MarketCap, coin.TotalVolume);
+                    volumes[symbol] = coin.TotalVolume;
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"   ❌ CoinGecko Error (dati di mercato): {ex.Message}");
+            Console.WriteLine($"   ❌ CoinGecko Error (dati di volume): {ex.Message}");
         }
 
-        return marketData;
+        return volumes;
     }
 
     private async Task<List<Cryptocurrency>> TryGetCryptoComTickers()
@@ -552,9 +548,6 @@ public class CoinGeckoMarketData
 {
     [JsonProperty("symbol")]
     public string Symbol { get; set; } = "";
-
-    [JsonProperty("market_cap")]
-    public decimal MarketCap { get; set; }
 
     [JsonProperty("total_volume")]
     public decimal TotalVolume { get; set; }
