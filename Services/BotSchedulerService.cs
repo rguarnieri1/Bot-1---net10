@@ -18,6 +18,7 @@ public class BotSchedulerService
     private int _checksPerformed = 0;
     private int _signalsGenerated = 0;
     private int _tradesRecorded = 0;
+    private readonly Dictionary<string, int> _cumulativeRejectionCounts = new();
 
     public BotSchedulerService(decimal initialCapital = 1000m)
     {
@@ -102,7 +103,17 @@ public class BotSchedulerService
 
             int signalsFound = 0;
             int signalsFiltered = 0;
+            var rejectionCounts = new Dictionary<string, int>();
             var openTrades = _reportingService.GetAllTrades().Where(t => t.Status == "Open").ToList();
+
+            void CountRejection(string category)
+            {
+                rejectionCounts.TryGetValue(category, out var c);
+                rejectionCounts[category] = c + 1;
+
+                _cumulativeRejectionCounts.TryGetValue(category, out var cc);
+                _cumulativeRejectionCounts[category] = cc + 1;
+            }
 
             foreach (var crypto in cryptos)
             {
@@ -112,7 +123,10 @@ public class BotSchedulerService
                     var candles = await _dataService.GetCandlesAsync(crypto.Symbol, "4h", 100);
 
                     if (candles.Count < 50)
+                    {
+                        CountRejection("Dati insufficienti (candele < 50)");
                         continue;
+                    }
 
                     var volatilityPercent = CalculateVolatility(candles);
 
@@ -152,7 +166,12 @@ public class BotSchedulerService
                         else
                         {
                             signalsFiltered++;
+                            CountRejection(ClassifyRiskRejection(positionResult.Reason));
                         }
+                    }
+                    else
+                    {
+                        CountRejection(ClassifyStrategyRejection(emaRibbonResult.Signal));
                     }
 
                     await Task.Delay(50);
@@ -170,6 +189,15 @@ public class BotSchedulerService
             Console.WriteLine($"   • Trade aperti: {openTrades.Count}");
             Console.WriteLine($"   • Account value (stimato): €{_currentAccountValue:F2}");
 
+            if (rejectionCounts.Count > 0)
+            {
+                Console.WriteLine("\n📊 Motivi di scarto in questo ciclo:");
+                foreach (var kv in rejectionCounts.OrderByDescending(k => k.Value))
+                {
+                    Console.WriteLine($"   • {kv.Key}: {kv.Value}");
+                }
+            }
+
             // Calcola e mostra metriche giornaliere ogni 10 cicli
             if (_checksPerformed % 10 == 0)
             {
@@ -183,12 +211,55 @@ public class BotSchedulerService
                     Console.WriteLine($"   • Total P&L: €{metrics.TotalProfit:F2}");
                     Console.WriteLine($"   • Expectancy: €{metrics.Expectancy:F2}");
                 }
+
+                if (_cumulativeRejectionCounts.Count > 0)
+                {
+                    Console.WriteLine($"\n📊 Motivi di scarto cumulativi (dopo {_checksPerformed} cicli):");
+                    foreach (var kv in _cumulativeRejectionCounts.OrderByDescending(k => k.Value))
+                    {
+                        Console.WriteLine($"   • {kv.Key}: {kv.Value}");
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"❌ Errore nel controllo del mercato: {ex.Message}");
         }
+    }
+
+    // Raggruppa i motivi di scarto della strategia in categorie leggibili per la diagnostica.
+    private static string ClassifyStrategyRejection(string signal)
+    {
+        if (signal.Contains("EMA Ribbon not aligned"))
+            return "Strategia: trend non allineato (EMA5/10/20/50)";
+        if (signal.Contains("Volume insufficient"))
+            return "Strategia: volume insufficiente";
+        if (signal.Contains("candle not"))
+            return "Strategia: candela non abbastanza forte";
+        if (signal.Contains("below EMA10") || signal.Contains("above EMA10"))
+            return "Strategia: prezzo non conferma vs EMA10";
+        if (signal.Contains("RSI"))
+            return "Strategia: RSI estremo";
+        if (signal.Contains("EMA breakout"))
+            return "Strategia: nessun breakout EMA confermato";
+        if (signal == "No Signal")
+            return "Strategia: dati insufficienti per il calcolo";
+        return $"Strategia: altro ({signal})";
+    }
+
+    // Raggruppa i motivi di scarto del RiskManager in categorie leggibili per la diagnostica.
+    private static string ClassifyRiskRejection(string reason)
+    {
+        if (reason.Contains("Leverage"))
+            return "Risk Manager: leva troppo alta";
+        if (reason.Contains("profit"))
+            return "Risk Manager: profitto non copre commissioni";
+        if (reason.Contains("Risk-reward"))
+            return "Risk Manager: rapporto rischio/rendimento insufficiente";
+        if (reason.Contains("Stop loss"))
+            return "Risk Manager: errore calcolo stop loss";
+        return $"Risk Manager: altro ({reason})";
     }
 
     private decimal CalculateVolatility(List<Candle> candles)
