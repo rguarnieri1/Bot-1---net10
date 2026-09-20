@@ -4,7 +4,7 @@ Documentazione tecnica basata sul codice sorgente attuale del progetto `1 - Bot 
 
 ## 1. Panoramica
 
-Bot 1 è un'applicazione console .NET 10 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per volume 24h ≥ $5.000.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Traccia inoltre i motivi di scarto di ogni ciclo (filtro strategia o RiskManager) per diagnosticare perché non vengono generati segnali. Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
+Bot 1 è un'applicazione console .NET 10 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per volume 24h ≥ $1.000.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Traccia inoltre i motivi di scarto di ogni ciclo (filtro strategia o RiskManager) per diagnosticare perché non vengono generati segnali. Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
 
 Punto di ingresso: `Program.cs`.
 
@@ -78,7 +78,7 @@ Libreria statica condivisa:
 
 `BotSchedulerService` orchestra il funzionamento continuo del bot:
 
-- Costruttore: inizializza `CryptoDataService`, `NotificationService`, `ReportingService`, `EmaRibbonTrendFollowingStrategy` e `RiskManager` (rischio 2% per trade, R:R 2:1, max posizione 10%, leva max 2.0x, commissioni 0.8%, tasse 26%). Nota: questi valori sono hardcoded nel costruttore e differiscono in parte da quelli in `config.json` (che indica 1% di rischio).
+- Costruttore: inizializza `CryptoDataService`, `NotificationService`, `ReportingService`, `EmaRibbonTrendFollowingStrategy` e `RiskManager` (rischio 2% per trade, R:R 2:1, max posizione 10%, leva max 2.0x, commissioni 0.6%, tasse 26%). Nota: questi valori sono hardcoded nel costruttore e differiscono in parte da quelli in `config.json` (che indica 1% di rischio).
 - `StartAsync()`:
   - Esegue subito un primo ciclo di controllo mercato.
   - Imposta un `Timer` che richiama `CheckMarketAsync()` ogni 60 minuti.
@@ -112,7 +112,7 @@ Libreria statica condivisa:
 
 **Filtro volume via CoinGecko** (`GetVolumesAsync` + `FilterByVolume`):
 - Prima di interrogare Crypto.com/Bybit, il servizio scarica il volume 24h da `GET https://api.coingecko.com/api/v3/coins/markets` (2 pagine da 250 risultati, ordinate per market cap decrescente → fino a 500 simboli), costruendo un dizionario simbolo→volume 24h (case-insensitive, primo valore vince in caso di duplicati).
-- I ticker ottenuti da Crypto.com o Bybit vengono poi filtrati tenendo solo i simboli presenti nel dizionario con `Volume24h >= $5.000.000` (costante `MinVolume24hUsd`, non letta da `config.json`); il filtro esclude le crypto che scambiano un volume troppo esiguo per essere affidabili (spread larghi, prezzi stantii). Non c'è più alcun filtro di capitalizzazione: è stato rimosso perché ridondante rispetto al volume come indicatore di liquidità/affidabilità.
+- I ticker ottenuti da Crypto.com o Bybit vengono poi filtrati tenendo solo i simboli presenti nel dizionario con `Volume24h >= $1.000.000` (costante `MinVolume24hUsd`, non letta da `config.json`); il filtro esclude le crypto che scambiano un volume troppo esiguo per essere affidabili (spread larghi, prezzi stantii). Non c'è più alcun filtro di capitalizzazione: è stato rimosso perché ridondante rispetto al volume come indicatore di liquidità/affidabilità.
 - Se CoinGecko non è raggiungibile o non risponde entro i tentativi previsti, il dizionario risulta vuoto e il filtro viene **saltato per quel ciclo** (vengono restituiti tutti i ticker non filtrati), con un warning in console.
 
 Caratteristiche generali:
@@ -181,7 +181,7 @@ Effettivamente letti dal codice (sezione `Notifications` da `NotificationService
 
 ### 12.2 `config.json`
 
-File di configurazione "di progetto" con schema più ampio (strategie, risk management, reporting, storage, API, ottimizzazioni) — **non referenziato da alcuna classe C#** nel codice attuale. Da considerare come specifica/riferimento per future estensioni, non come sorgente di configurazione runtime. Anche la soglia minima di volume 24h usata dal filtro CoinGecko (§7) è hardcoded in `CryptoDataService` (`MinVolume24hUsd = $5.000.000`) e non proviene da questo file.
+File di configurazione "di progetto" con schema più ampio (strategie, risk management, reporting, storage, API, ottimizzazioni) — **non referenziato da alcuna classe C#** nel codice attuale. Da considerare come specifica/riferimento per future estensioni, non come sorgente di configurazione runtime. Anche la soglia minima di volume 24h usata dal filtro CoinGecko (§7) è hardcoded in `CryptoDataService` (`MinVolume24hUsd = $1.000.000`) e non proviene da questo file.
 
 ## 13. Dipendenze principali (`1 - Bot Cripto.csproj`)
 
