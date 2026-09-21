@@ -27,7 +27,7 @@ Strategies/
   TechnicalIndicators.cs                     Libreria indicatori: EMA, SMA, RSI, MACD, Bollinger Bands
 Services/
   BotSchedulerService.cs                     Orchestratore del ciclo live (timer, scansione, notifiche)
-  CryptoDataService.cs                       Recupero dati mercato (Crypto.com → Bybit → dati demo)
+  CryptoDataService.cs                       Recupero dati mercato (Crypto.com → Bybit, mai dati demo)
   RiskManager.cs                             Position sizing, calcolo P&L/tasse, metriche di performance
   NotificationService.cs                     Notifiche console, log file, toast Windows, email
   ReportingService.cs                        Persistenza trade (Data/trades.json), report settimanale
@@ -109,7 +109,7 @@ Libreria statica condivisa:
 **Ticker** — catena di fallback a tre livelli:
 1. **Crypto.com API** (`https://api.crypto.com/v2/public/get-ticker`, `get-candlestick`) — sorgente primaria.
 2. **Bybit API** (`https://api.bybit.com/v5/market/tickers`, `market/kline`, categoria `spot`) — fallback se Crypto.com fallisce o non risponde.
-3. **Dati demo hardcoded** — se entrambe le API falliscono: lista statica di ~50 crypto (`GetDemoData`) per i ticker, e candele generate casualmente con random walk (`GenerateDemoCandles`) per le serie storiche. Nota: la modalità demo non passa dal filtro di volume (viene ritornata direttamente).
+3. **Nessun fallback demo** — se sia Crypto.com sia Bybit falliscono, `GetLargeCapCryptocurrenciesAsync()` ritorna una lista vuota (ciclo saltato) e `GetCandlesAsync()` ritorna una lista di candele vuota (simbolo saltato, `candles.Count < 50` in `BotSchedulerService`). I generatori di dati demo (`GetDemoData`, `GenerateDemoCandles`) sono stati rimossi: il bot non opera mai su prezzi o candele fittizie.
 
 **Filtro volume via CoinGecko** (`GetVolumesAsync` + `FilterByVolume`):
 - Prima di interrogare Crypto.com/Bybit, il servizio scarica il volume 24h da `GET https://api.coingecko.com/api/v3/coins/markets` (2 pagine da 250 risultati, ordinate per market cap decrescente → fino a 500 simboli), costruendo un dizionario simbolo→volume 24h (case-insensitive, primo valore vince in caso di duplicati).
