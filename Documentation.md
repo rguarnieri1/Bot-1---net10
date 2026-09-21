@@ -12,7 +12,7 @@ Punto di ingresso: `Program.cs`.
 
 L'app legge gli argomenti da riga di comando:
 
-- **Modalità Live (default)**: `dotnet run` → esegue `RunLiveAsync()`, che istanzia `BotSchedulerService` con capitale iniziale €150 e avvia il ciclo di monitoraggio continuo. Il banner iniziale stampa "Risk per Trade: 1% (€1.50)", ma il valore realmente passato al `RiskManager` è 2% (vedi §6 e §14): il testo del banner è disallineato dal comportamento effettivo.
+- **Modalità Live (default)**: `dotnet run` → esegue `RunLiveAsync()`, che istanzia `BotSchedulerService` con capitale iniziale €1000 e avvia il ciclo di monitoraggio continuo. Il banner iniziale ora riporta correttamente "Risk per Trade: 2% (€20.00)" e "Max Position Size: 10% (€100.00)", coerenti con i valori realmente passati al `RiskManager`.
 - **Modalità Backtest sintetico**: `dotnet run -- --backtest` → esegue `RunBacktestAsync()`, che istanzia `SyntheticBacktest` (capitale €100) e genera un report su 365 giorni, 20 simboli, win-rate atteso 55%, 8 trade per simbolo.
 
 ## 3. Struttura del progetto
@@ -93,7 +93,7 @@ Libreria statica condivisa:
   6. Se la posizione è valida: invia notifica (`NotificationService`), registra il trade (`ReportingService.RecordTrade`), aggiorna contatori.
   7. Applica un piccolo delay (50ms) tra una crypto e l'altra per non sovraccaricare le API.
   8. A fine ciclo stampa un riepilogo (segnali trovati/filtrati, trade aperti, valore account stimato) seguito dai **motivi di scarto del ciclo corrente** (conteggio per categoria, in ordine decrescente).
-  9. Ogni 10 cicli, calcola e stampa le metriche di performance cumulative (win rate, profit factor, P&L totale, expectancy) tramite `RiskManager.CalculatePerformanceMetrics`, seguite dai **motivi di scarto cumulativi** (dall'avvio del bot).
+  9. Ogni 10 cicli, calcola e stampa le metriche di performance cumulative (win rate, profit factor, P&L totale, expectancy) tramite `RiskManager.CalculatePerformanceMetrics`, seguite dai **motivi di scarto cumulativi** (dall'avvio del bot). Nota: il capitale iniziale passato a questa chiamata è hardcoded a `1000m`, che ora coincide con il capitale realmente in uso (€1000, vedi §2) — il ROI cumulativo è quindi corretto, ma solo per coincidenza: se il capitale in `Program.cs` venisse cambiato di nuovo, questo valore andrebbe aggiornato manualmente.
 
 **Diagnostica dei motivi di scarto** — per capire quale filtro blocca i segnali, ogni candidato scartato viene classificato in una categoria leggibile e conteggiato sia per il ciclo corrente (`rejectionCounts`, azzerato a ogni ciclo) sia cumulativamente (`_cumulativeRejectionCounts`, per l'intera durata del processo):
 - `ClassifyStrategyRejection(signal)` — mappa il testo del `Signal` di rigetto della strategia (§5.1) in categorie: trend non allineato, volume insufficiente, candela non abbastanza forte, prezzo non conferma vs EMA10, RSI estremo, nessun breakout EMA, dati insufficienti; qualsiasi altro testo finisce in "Strategia: altro (...)".
@@ -197,6 +197,6 @@ File di configurazione "di progetto" con schema più ampio (strategie, risk mana
 - `BotSchedulerService` non aggiorna mai `_currentAccountValue` né chiude trade automaticamente: il position sizing nel ciclo live usa sempre il capitale iniziale e i trade restano sempre `Open` finché non viene chiamato manualmente `ReportingService.CloseTradeAsync`.
 - `BacktestService.RunBacktestAsync` non esegue realmente l'analisi della strategia sui dati storici (ciclo placeholder); solo `SyntheticBacktest` produce risultati end-to-end, ma basati su dati simulati anziché su prezzi reali.
 - I livelli RSI di ipercomprato/ipervenduto dichiarati come campo (`70/30`) non corrispondono alle soglie realmente applicate nei controlli di rigetto (`85/15`).
-- Il banner di avvio in `Program.cs` (`RunLiveAsync`) stampa "Risk per Trade: 1% (€1.50)", ma `BotSchedulerService` passa realmente `riskPercentPerTrade: 0.02m` (2%) al `RiskManager`: il testo mostrato all'utente non riflette il rischio effettivamente applicato.
 - Il filtro di volume 24h (§7) dipende da CoinGecko, un terzo provider aggiuntivo rispetto a Crypto.com/Bybit già usati per prezzi e candele: se CoinGecko è irraggiungibile o applica rate limiting, il filtro viene silenziosamente disattivato per il ciclo (nessun retry, nessun backoff), quindi in quel ciclo possono passare anche crypto poco scambiate.
 - I parametri di `RiskManager` usati dai due backtest (§11.1, §11.2) — rischio 1%, leva max 1.5x, commissioni 0.8% — non coincidono con quelli usati realmente in live da `BotSchedulerService` (2%, 2.0x, 0.6%): i risultati dei backtest non sono quindi direttamente comparabili con il comportamento live attuale. `SyntheticBacktest` mostra inoltre un'etichetta "Commissioni (0.1%)" nel report che non riflette il valore realmente configurato (0.8%).
+- Nel ciclo live (§6, punto 9), il calcolo delle metriche cumulative ogni 10 cicli usa un capitale iniziale hardcoded (`1000m`) invece di leggere il capitale realmente configurato in `Program.cs`: al momento coincidono entrambi (€1000), ma è un valore da tenere sincronizzato manualmente se il capitale live cambia di nuovo.
