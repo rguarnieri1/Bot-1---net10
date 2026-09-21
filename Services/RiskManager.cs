@@ -4,11 +4,12 @@ namespace BotCripto.Services;
 
 public class RiskManager
 {
+    private const int MaxConcurrentTrades = 100;
+
     private readonly decimal _accountSize;
     private readonly decimal _riskPerTrade;
     private readonly decimal _minRewardRatio;
     private readonly decimal _maxPositionSizePercent;
-    private readonly decimal _maxLeverage;
     private readonly decimal _commissionsPercent;
     private readonly decimal _taxRate;
 
@@ -17,7 +18,6 @@ public class RiskManager
         decimal riskPercentPerTrade = 0.01m,
         decimal rewardRiskRatio = 2.0m,
         decimal maxPositionSizePercent = 0.10m,
-        decimal maxLeverage = 1.5m,
         decimal commissionsPercent = 0.10m,
         decimal taxRate = 0.26m)
     {
@@ -25,7 +25,6 @@ public class RiskManager
         _riskPerTrade = accountSize * riskPercentPerTrade;
         _minRewardRatio = rewardRiskRatio;
         _maxPositionSizePercent = maxPositionSizePercent;
-        _maxLeverage = maxLeverage;
         _commissionsPercent = commissionsPercent;
         _taxRate = taxRate;
     }
@@ -71,15 +70,16 @@ public class RiskManager
         var targetPrice = entryPrice * (1 + targetPercent);
         var profitPerUnit = targetPrice - entryPrice;
 
-        // 5️⃣ Verifica esposizione totale (no over-leverage)
-        var totalExposure = openTrades.Sum(t => t.EntryPrice * 1) + positionSize;
-        var leverageRatio = totalExposure / currentAccountValue;
-
-        if (leverageRatio > _maxLeverage)
+        // 5️⃣ Verifica numero massimo di trade simultanei
+        if (openTrades.Count >= MaxConcurrentTrades)
         {
-            result.Reason = $"Leverage too high: {leverageRatio:F2}x > {_maxLeverage}x max";
+            result.Reason = $"Max concurrent trades reached: {openTrades.Count} >= {MaxConcurrentTrades}";
             return result;
         }
+
+        // Esposizione totale (indicatore informativo, non blocca più il trade)
+        var totalExposure = openTrades.Sum(t => t.EntryPrice * 1) + positionSize;
+        var leverageRatio = totalExposure / currentAccountValue;
 
         // 6️⃣ Verifica che il profitto atteso copra commissioni
         var expectedProfit = positionSize * profitPerUnit;

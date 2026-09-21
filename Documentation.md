@@ -78,7 +78,7 @@ Libreria statica condivisa:
 
 `BotSchedulerService` orchestra il funzionamento continuo del bot:
 
-- Costruttore: inizializza `CryptoDataService`, `NotificationService`, `ReportingService`, `EmaRibbonTrendFollowingStrategy` e `RiskManager` (rischio 2% per trade, R:R 2:1, max posizione 10%, leva max 2.0x, commissioni 0.6%, tasse 26%). Nota: questi valori sono hardcoded nel costruttore e differiscono in parte da quelli in `config.json` (che indica 1% di rischio).
+- Costruttore: inizializza `CryptoDataService`, `NotificationService`, `ReportingService`, `EmaRibbonTrendFollowingStrategy` e `RiskManager` (rischio 2% per trade, R:R 2:1, max posizione 10%, max 100 trade simultanei, commissioni 0.6%, tasse 26%). Nota: questi valori sono hardcoded nel costruttore e differiscono in parte da quelli in `config.json` (che indica 1% di rischio).
 - `StartAsync()`:
   - Esegue subito un primo ciclo di controllo mercato.
   - Imposta un `Timer` che richiama `CheckMarketAsync()` ogni 60 minuti.
@@ -97,7 +97,7 @@ Libreria statica condivisa:
 
 **Diagnostica dei motivi di scarto** — per capire quale filtro blocca i segnali, ogni candidato scartato viene classificato in una categoria leggibile e conteggiato sia per il ciclo corrente (`rejectionCounts`, azzerato a ogni ciclo) sia cumulativamente (`_cumulativeRejectionCounts`, per l'intera durata del processo):
 - `ClassifyStrategyRejection(signal)` — mappa il testo del `Signal` di rigetto della strategia (§5.1) in categorie: trend non allineato, volume insufficiente, candela non abbastanza forte, prezzo non conferma vs EMA10, RSI estremo, nessun breakout EMA, dati insufficienti; qualsiasi altro testo finisce in "Strategia: altro (...)".
-- `ClassifyRiskRejection(reason)` — mappa il `Reason` di rigetto del `RiskManager` (§8) in categorie: leva troppo alta, profitto non copre commissioni, rapporto rischio/rendimento insufficiente, errore calcolo stop loss; altrimenti "Risk Manager: altro (...)".
+- `ClassifyRiskRejection(reason)` — mappa il `Reason` di rigetto del `RiskManager` (§8) in categorie: troppi trade aperti simultaneamente, profitto non copre commissioni, rapporto rischio/rendimento insufficiente, errore calcolo stop loss; altrimenti "Risk Manager: altro (...)".
 
 > Nota: `_currentAccountValue` non viene mai aggiornato dopo l'inizializzazione (nessuna logica di chiusura trade nel loop live), quindi il position sizing usa sempre il capitale iniziale.
 
@@ -128,10 +128,11 @@ Classe centrale per money management, indipendente dalla strategia:
 - **`CalculatePosition(symbol, entryPrice, volatilityPercent, openTrades, currentAccountValue)`**:
   - Stop loss fisso all'1.5% dal prezzo di entrata, target fisso al 3% (rapporto 2:1).
   - Position size = rischio per trade (in valuta) / rischio per unità, cappato al max % di posizione configurato.
-  - Verifica leva totale (esposizione aperta + nuova posizione / valore account) contro `maxLeverage`; rigetta se superata.
+  - Verifica che il numero di trade aperti (`openTrades.Count`) sia sotto `MaxConcurrentTrades` (costante hardcoded, 100); rigetta se raggiunto.
+  - Calcola comunque un'esposizione totale/leva (`LeverageRatio`) come indicatore puramente informativo — non blocca più il trade. Nota: la formula somma il prezzo di entrata grezzo dei trade aperti (`t.EntryPrice * 1`), non il valore reale della posizione (`Trade` non memorizza la quantità acquistata), quindi questo numero non è una leva finanziaria affidabile.
   - Verifica che il profitto atteso netto (dopo commissioni doppie entry+exit) sia positivo.
   - Verifica che il rapporto rischio/rendimento effettivo sia ≥ 1.2; altrimenti rigetta.
-  - Ritorna `PositionSizingResult` con size, stop/target, rischio, profitto atteso, leva, commissioni e motivazione.
+  - Ritorna `PositionSizingResult` con size, stop/target, rischio, profitto atteso, leva (informativa), commissioni e motivazione.
 - **`CalculateProfitAndTaxes(entryPrice, exitPrice, positionSize, isWinningTrade)`**: calcola P&L lordo, commissioni (entry+exit), tasse (26% solo sui profitti netti positivi), profitto finale netto.
 - **`CalculatePerformanceMetrics(trades, initialCapital)`**: calcola su tutti i trade chiusi — win rate, profit factor, ROI, expectancy, medie win/loss, massime serie consecutive di vittorie/sconfitte, commissioni totali.
 
@@ -164,7 +165,7 @@ Genera trade **simulati statisticamente** (non basati su dati di mercato reali):
 - Per ogni combinazione simbolo/trade, genera un prezzo di entrata casuale, decide se vincente in base al `expectedWinRate` fornito, quindi calcola un'uscita con profitto (1-6%) o perdita (0.5-3%) casuale entro range coerenti con SL/TP configurati.
 - Distribuisce le date di apertura/chiusura casualmente entro il periodo richiesto (default 365 giorni, seed `Random(42)` per riproducibilità).
 - Calcola le metriche con `RiskManager.CalculatePerformanceMetrics` e stampa un report esteso (ROI annualizzato, top 5 win/loss, validazione rispetto a soglie 50%/55% di win-rate), salvato in `Data/Reports/Backtest_Synthetic_*.txt`.
-- Istanzia un proprio `RiskManager` con parametri **diversi da quelli usati in live** (§6): rischio 1% per trade, leva max 1.5x, commissioni 0.8% (contro 2% / 2.0x / 0.6% del `BotSchedulerService`). Il report stampa inoltre l'etichetta "Commissioni (0.1%)", disallineata dal valore realmente configurato (0.8%).
+- Istanzia un proprio `RiskManager` con rischio diverso da quello usato in live (§6): rischio 1% per trade (contro 2%), commissioni 0.6% (ora allineate al `BotSchedulerService`). Il report stampa inoltre l'etichetta "Commissioni (0.1%)", disallineata dal valore realmente configurato (0.6%).
 
 ### 11.2 `Services/BacktestService.cs` (non collegato a `Program.cs`, invocabile solo programmaticamente)
 
@@ -173,7 +174,7 @@ Pensato per un backtest su **dati storici reali** scaricati da `CryptoDataServic
 - **Limite noto**: il ciclo che dovrebbe eseguire l'analisi strategia-per-candela (`for i in candlesInRange`) attualmente non chiama la strategia né genera trade reali — è un placeholder che itera senza produrre segnali.
 - `SimulateTradeClosures` chiude eventuali trade aperti con un esito casuale (55% win) per permettere comunque il calcolo delle metriche.
 - Genera un report dettagliato simile a quello sintetico, salvato in `Data/Reports/Backtest_Report_*.txt`.
-- Istanzia un proprio `RiskManager` con gli stessi parametri di `SyntheticBacktest` (rischio 1%, leva max 1.5x, commissioni 0.8%), anch'essi diversi da quelli live.
+- Istanzia un proprio `RiskManager` con gli stessi parametri di `SyntheticBacktest` (rischio 1%, commissioni 0.6%); il rischio per trade resta diverso da quello live (2%).
 
 ## 12. Configurazione
 
@@ -198,5 +199,6 @@ File di configurazione "di progetto" con schema più ampio (strategie, risk mana
 - `BacktestService.RunBacktestAsync` non esegue realmente l'analisi della strategia sui dati storici (ciclo placeholder); solo `SyntheticBacktest` produce risultati end-to-end, ma basati su dati simulati anziché su prezzi reali.
 - I livelli RSI di ipercomprato/ipervenduto dichiarati come campo (`70/30`) non corrispondono alle soglie realmente applicate nei controlli di rigetto (`85/15`).
 - Il filtro di volume 24h (§7) dipende da CoinGecko, un terzo provider aggiuntivo rispetto a Crypto.com/Bybit già usati per prezzi e candele: se CoinGecko è irraggiungibile o applica rate limiting, il filtro viene silenziosamente disattivato per il ciclo (nessun retry, nessun backoff), quindi in quel ciclo possono passare anche crypto poco scambiate.
-- I parametri di `RiskManager` usati dai due backtest (§11.1, §11.2) — rischio 1%, leva max 1.5x, commissioni 0.8% — non coincidono con quelli usati realmente in live da `BotSchedulerService` (2%, 2.0x, 0.6%): i risultati dei backtest non sono quindi direttamente comparabili con il comportamento live attuale. `SyntheticBacktest` mostra inoltre un'etichetta "Commissioni (0.1%)" nel report che non riflette il valore realmente configurato (0.8%).
+- Il rischio per trade usato dai due backtest (§11.1, §11.2) — 1% — non coincide con quello usato realmente in live da `BotSchedulerService` (2%): i risultati dei backtest non sono quindi direttamente comparabili con il comportamento live attuale (le commissioni, 0.6%, sono invece ora allineate). `SyntheticBacktest` mostra inoltre un'etichetta "Commissioni (0.1%)" nel report che non riflette il valore realmente configurato (0.6%).
+- Il controllo "numero massimo di trade simultanei" (§8) usa una soglia fissa (`MaxConcurrentTrades = 100`) uguale per tutti gli account, indipendente dal capitale configurato: con capitali piccoli il vero limite pratico resta il profitto minimo/commissioni (§8), non questo contatore.
 - Nel ciclo live (§6, punto 9), il calcolo delle metriche cumulative ogni 10 cicli usa un capitale iniziale hardcoded (`1000m`) invece di leggere il capitale realmente configurato in `Program.cs`: al momento coincidono entrambi (€1000), ma è un valore da tenere sincronizzato manualmente se il capitale live cambia di nuovo.

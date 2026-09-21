@@ -31,7 +31,6 @@ public class BotSchedulerService
             riskPercentPerTrade: 0.02m,      // 2% rischio per trade
             rewardRiskRatio: 2.0m,            // 2:1 R:R
             maxPositionSizePercent: 0.10m,    // Max 10% per trade
-            maxLeverage: 2.0m,                // Max 2.0x leva
             commissionsPercent: 0.6m,         // 0.6% commissioni
             taxRate: 0.26m                    // 26% tasse
         );
@@ -251,8 +250,8 @@ public class BotSchedulerService
     // Raggruppa i motivi di scarto del RiskManager in categorie leggibili per la diagnostica.
     private static string ClassifyRiskRejection(string reason)
     {
-        if (reason.Contains("Leverage"))
-            return "Risk Manager: leva troppo alta";
+        if (reason.Contains("Max concurrent trades"))
+            return "Risk Manager: troppi trade aperti simultaneamente";
         if (reason.Contains("profit"))
             return "Risk Manager: profitto non copre commissioni";
         if (reason.Contains("Risk-reward"))
