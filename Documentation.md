@@ -31,7 +31,7 @@ Services/
   RiskManager.cs                             Position sizing, calcolo P&L/tasse, metriche di performance
   NotificationService.cs                     Notifiche console, log file, toast Windows, email
   ReportingService.cs                        Persistenza trade (Data/trades.json), report settimanale
-  BacktestService.cs                         Backtest su dati storici reali (parzialmente implementato)
+  BacktestService.cs                         Backtest su dati storici reali (--backtest-real)
   SyntheticBacktest.cs                       Backtest sintetico basato su distribuzione statistica
 config.json                                  Configurazione "di progetto" (parametri strategia, risk, reporting)
 appsettings.json / appsettings.local.json    Configurazione runtime (.NET), incl. credenziali email
@@ -52,7 +52,7 @@ appsettings.json / appsettings.local.json    Configurazione runtime (.NET), incl
 
 Unica strategia attiva nel bot live. Richiede almeno 60 candele. Pipeline di filtri sequenziali (ogni filtro fallito interrompe l'analisi con un `Signal` di rigetto specifico):
 
-1. **EMA Ribbon** — calcola EMA a 5, 10, 20, 50 periodi (`TechnicalIndicators.CalculateEMA`).
+1. **EMA Ribbon** — calcola EMA a 5, 10, 20, 30 periodi (`TechnicalIndicators.CalculateEMA`).
 2. **Trend filter (allineamento ribbon)** — richiede allineamento stretto crescente (uptrend: EMA5>EMA10>EMA20>EMA30) o decrescente (downtrend); altrimenti rigetta ("no clear trend").
 3. **Volume filter** — il volume dell'ultima candela deve essere ≥ 80% della media mobile a 20 periodi; altrimenti rigetta.
 4. **Candle confirmation** — l'ultima candela deve avere un corpo "solido" (`bodyStrength ≥ 0.6`) nella direzione del trend, e il prezzo deve essere oltre EMA10 nella direzione corretta.
