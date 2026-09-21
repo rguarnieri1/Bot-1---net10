@@ -231,7 +231,7 @@ public class BotSchedulerService
     private static string ClassifyStrategyRejection(string signal)
     {
         if (signal.Contains("EMA Ribbon not aligned"))
-            return "Strategia: trend non allineato (EMA5/10/20/50)";
+            return "Strategia: trend non allineato (EMA5/10/20/30)";
         if (signal.Contains("Volume insufficient"))
             return "Strategia: volume insufficiente";
         if (signal.Contains("candle not"))

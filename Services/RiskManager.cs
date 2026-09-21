@@ -55,14 +55,17 @@ public class RiskManager
             return result;
         }
 
-        // 2️⃣ Calcola position size basato su rischio fisso
+        // 2️⃣ Calcola position size (in unità dell'asset) basato su rischio fisso
         var positionSize = _riskPerTrade / riskPerUnit;
 
-        // 3️⃣ Valida contro massimale per trade
-        var maxPositionSize = currentAccountValue * _maxPositionSizePercent;
-        if (positionSize > maxPositionSize)
+        // 3️⃣ Valida contro massimale per trade: confronto in € sul valore nozionale
+        // (positionSize è in unità di asset, non in euro - va convertito prima di confrontarlo
+        // con maxPositionValue, altrimenti il cap non scatta quasi mai).
+        var maxPositionValue = currentAccountValue * _maxPositionSizePercent;
+        var positionValue = positionSize * entryPrice;
+        if (positionValue > maxPositionValue)
         {
-            positionSize = maxPositionSize;
+            positionSize = maxPositionValue / entryPrice;
         }
 
         // 4️⃣ Calcola target a 3%
@@ -205,8 +208,11 @@ public class RiskManager
             metrics.ProfitFactor = decimal.MaxValue;
 
         // ROI
-        var netProfit = metrics.TotalProfit - metrics.TotalCommissions;
-        metrics.ROI = (netProfit / initialCapital) * 100;
+        // TotalProfit è la somma di Trade.Profit: quando i trade sono chiusi via
+        // CalculateProfitAndTaxes() è già al netto di commissioni e tasse, quindi qui
+        // non va sottratto di nuovo TotalCommissions (che tra l'altro usa una formula
+        // che non tiene conto della position size reale del trade).
+        metrics.ROI = (metrics.TotalProfit / initialCapital) * 100;
 
         // Consecutive wins/losses
         int maxConsecutiveWins = 0;

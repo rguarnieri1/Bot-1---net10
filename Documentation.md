@@ -12,8 +12,9 @@ Punto di ingresso: `Program.cs`.
 
 L'app legge gli argomenti da riga di comando:
 
-- **Modalità Live (default)**: `dotnet run` → esegue `RunLiveAsync()`, che istanzia `BotSchedulerService` con capitale iniziale €1000 e avvia il ciclo di monitoraggio continuo. Il banner iniziale ora riporta correttamente "Risk per Trade: 2% (€20.00)" e "Max Position Size: 10% (€100.00)", coerenti con i valori realmente passati al `RiskManager`.
-- **Modalità Backtest sintetico**: `dotnet run -- --backtest` → esegue `RunBacktestAsync()`, che istanzia `SyntheticBacktest` (capitale €100) e genera un report su 365 giorni, 20 simboli, win-rate atteso 55%, 8 trade per simbolo.
+- **Modalità Live (default)**: `dotnet run` → esegue `RunLiveAsync()`, che istanzia `BotSchedulerService` con capitale iniziale €1000 e avvia il ciclo di monitoraggio continuo. Il banner iniziale riporta correttamente "Risk per Trade: 2% (€20.00)", "Max Position Size: 10% (€100.00)" e "Configurazione: EMA 5, 10, 20, 30", coerenti con i valori realmente in uso.
+- **Modalità Backtest sintetico**: `dotnet run -- --backtest` → esegue `RunBacktestAsync()`, che istanzia `SyntheticBacktest` (capitale €100) e genera un report su 365 giorni, 20 simboli, win-rate atteso 55%, 8 trade per simbolo. È una simulazione statistica (non usa prezzi storici reali, vedi §11.1).
+- **Modalità Backtest su dati storici reali**: `dotnet run -- --backtest-real [giorni]` (default 30 giorni se omesso) → esegue `RunRealBacktestAsync()`, che recupera l'universo di crypto filtrato per volume da `CryptoDataService.GetLargeCapCryptocurrenciesAsync()` e lancia `BacktestService.RunBacktestAsync()` sugli ultimi N giorni di candele 4h reali (vedi §11.2). A differenza del backtest sintetico, esegue realmente `EmaRibbonTrendFollowingStrategy` e `RiskManager` candela per candela.
 
 ## 3. Struttura del progetto
 
@@ -127,14 +128,14 @@ Classe centrale per money management, indipendente dalla strategia:
 
 - **`CalculatePosition(symbol, entryPrice, volatilityPercent, openTrades, currentAccountValue)`**:
   - Stop loss fisso all'1.5% dal prezzo di entrata, target fisso al 3% (rapporto 2:1).
-  - Position size = rischio per trade (in valuta) / rischio per unità, cappato al max % di posizione configurato.
+  - Position size (in unità dell'asset) = rischio per trade (in valuta) / rischio per unità, poi cappato confrontando il **valore nozionale** (`positionSize * entryPrice`, in €) con il massimale (`currentAccountValue * maxPositionSizePercent`, in €) — corretto un bug per cui il confronto avveniva tra unità di asset e un importo in euro, che di fatto disattivava quasi sempre il cap (con rischio 2%/stop 1.5%, il nozionale reale finiva sempre attorno al 133% del capitale invece del 10% previsto, indipendentemente dal prezzo dell'asset).
   - Verifica che il numero di trade aperti (`openTrades.Count`) sia sotto `MaxConcurrentTrades` (costante hardcoded, 100); rigetta se raggiunto.
   - Calcola comunque un'esposizione totale/leva (`LeverageRatio`) come indicatore puramente informativo — non blocca più il trade. Nota: la formula somma il prezzo di entrata grezzo dei trade aperti (`t.EntryPrice * 1`), non il valore reale della posizione (`Trade` non memorizza la quantità acquistata), quindi questo numero non è una leva finanziaria affidabile.
   - Verifica che il profitto atteso netto (dopo commissioni doppie entry+exit) sia positivo.
   - Verifica che il rapporto rischio/rendimento effettivo sia ≥ 1.2; altrimenti rigetta.
   - Ritorna `PositionSizingResult` con size, stop/target, rischio, profitto atteso, leva (informativa), commissioni e motivazione.
 - **`CalculateProfitAndTaxes(entryPrice, exitPrice, positionSize, isWinningTrade)`**: calcola P&L lordo, commissioni (entry+exit), tasse (26% solo sui profitti netti positivi), profitto finale netto.
-- **`CalculatePerformanceMetrics(trades, initialCapital)`**: calcola su tutti i trade chiusi — win rate, profit factor, ROI, expectancy, medie win/loss, massime serie consecutive di vittorie/sconfitte, commissioni totali.
+- **`CalculatePerformanceMetrics(trades, initialCapital)`**: calcola su tutti i trade chiusi — win rate, profit factor, ROI, expectancy, medie win/loss, massime serie consecutive di vittorie/sconfitte, commissioni totali. `ROI` ora usa direttamente `TotalProfit / initialCapital` — corretto un bug per cui sottraeva una seconda volta le commissioni (già incluse in `Trade.Profit` quando il trade è chiuso via `CalculateProfitAndTaxes`) usando inoltre una formula errata (`EntryPrice * 1`, stesso tipo di bug unità-vs-euro del punto precedente), producendo ROI assurdi (es. -97.000%). Il campo `TotalCommissions` resta con la formula non corretta (usato solo da `SyntheticBacktest` per un calcolo separato, §11.1) e non va considerato affidabile.
 
 ## 9. Notifiche (`Services/NotificationService.cs`)
 
@@ -167,14 +168,18 @@ Genera trade **simulati statisticamente** (non basati su dati di mercato reali):
 - Calcola le metriche con `RiskManager.CalculatePerformanceMetrics` e stampa un report esteso (ROI annualizzato, top 5 win/loss, validazione rispetto a soglie 50%/55% di win-rate), salvato in `Data/Reports/Backtest_Synthetic_*.txt`.
 - Istanzia un proprio `RiskManager` con rischio diverso da quello usato in live (§6): rischio 1% per trade (contro 2%), commissioni 0.6% (ora allineate al `BotSchedulerService`). Il report stampa inoltre l'etichetta "Commissioni (0.1%)", disallineata dal valore realmente configurato (0.6%).
 
-### 11.2 `Services/BacktestService.cs` (non collegato a `Program.cs`, invocabile solo programmaticamente)
+### 11.2 `Services/BacktestService.cs` (invocabile da `Program.cs` con `--backtest-real [giorni]`, vedi §2)
 
-Pensato per un backtest su **dati storici reali** scaricati da `CryptoDataService`:
-- Scarica fino a 300 candele per simbolo e filtra quelle nel range di date richiesto.
-- **Limite noto**: il ciclo che dovrebbe eseguire l'analisi strategia-per-candela (`for i in candlesInRange`) attualmente non chiama la strategia né genera trade reali — è un placeholder che itera senza produrre segnali.
-- `SimulateTradeClosures` chiude eventuali trade aperti con un esito casuale (55% win) per permettere comunque il calcolo delle metriche.
-- Genera un report dettagliato simile a quello sintetico, salvato in `Data/Reports/Backtest_Report_*.txt`.
-- Istanzia un proprio `RiskManager` con gli stessi parametri di `SyntheticBacktest` (rischio 1%, commissioni 0.6%); il rischio per trade resta diverso da quello live (2%).
+Backtest reale su **dati storici veri** scaricati da `CryptoDataService` (Crypto.com/Bybit), che esegue effettivamente `EmaRibbonTrendFollowingStrategy` e `RiskManager`:
+- Per ogni simbolo scarica fino a 300 candele (4h di default) e le ordina cronologicamente.
+- Cammina candela per candela: usa le prime `WarmupCandles` (60) come riscaldamento per gli indicatori, poi per ogni candela dentro `[startDate, endDate]` chiama `EmaRibbonTrendFollowingStrategy.Analyze()` sulla finestra storica fino a quel punto (mai dati futuri).
+- Se la strategia genera un segnale e non c'è già una posizione aperta su quel simbolo, chiama `RiskManager.CalculatePosition()` per dimensionare il trade (stop loss/target reali, non simulati) e lo apre.
+- Ad ogni candela successiva verifica se il prezzo (High/Low) ha toccato lo stop loss o il target; se entrambi nella stessa candela assume lo stop loss (ipotesi conservativa). Chiude il trade e calcola il P&L netto reale con `RiskManager.CalculateProfitAndTaxes()` (commissioni + tasse incluse).
+- Un solo trade aperto per simbolo alla volta; l'esposizione tra simboli diversi non è vincolata a livello di portafoglio (ogni simbolo processato in isolamento, `openTrades` passato a `CalculatePosition` è sempre vuoto).
+- Una posizione ancora aperta a fine dati storici viene scartata dalle metriche (solo i trade `Closed` vengono conteggiati).
+- Genera un report con P&L netto, ROI netto, win rate, profit factor, expectancy, salvato in `Data/Reports/Backtest_Report_*.txt`.
+- Istanzia un proprio `RiskManager` con rischio 2% (allineato al live) e commissioni 0.6%.
+- **Nota**: le API di Crypto.com/Bybit restituiscono solo le candele più recenti fino ad "adesso", quindi la finestra di test è sempre "gli ultimi N giorni", non un periodo storico arbitrario nel passato.
 
 ## 12. Configurazione
 
@@ -196,7 +201,7 @@ File di configurazione "di progetto" con schema più ampio (strategie, risk mana
 
 - `config.json` non è cablato al codice: i parametri realmente attivi sono quelli hardcoded nelle classi (`EmaRibbonTrendFollowingStrategy`, `BotSchedulerService`, `RiskManager`).
 - `BotSchedulerService` non aggiorna mai `_currentAccountValue` né chiude trade automaticamente: il position sizing nel ciclo live usa sempre il capitale iniziale e i trade restano sempre `Open` finché non viene chiamato manualmente `ReportingService.CloseTradeAsync`.
-- `BacktestService.RunBacktestAsync` non esegue realmente l'analisi della strategia sui dati storici (ciclo placeholder); solo `SyntheticBacktest` produce risultati end-to-end, ma basati su dati simulati anziché su prezzi reali.
+- `BacktestService.RunBacktestAsync` ora esegue realmente `EmaRibbonTrendFollowingStrategy` e `RiskManager` su candele storiche reali (vedi §11.2); resta il limite che ogni simbolo è processato in isolamento (nessun vincolo di esposizione realmente condivisa tra simboli diversi nello stesso istante) e che le API di Crypto.com/Bybit restituiscono solo le candele più recenti (nessuna finestra storica arbitraria nel passato).
 - I livelli RSI di ipercomprato/ipervenduto dichiarati come campo (`70/30`) non corrispondono alle soglie realmente applicate nei controlli di rigetto (`85/15`).
 - Il filtro di volume 24h (§7) dipende da CoinGecko, un terzo provider aggiuntivo rispetto a Crypto.com/Bybit già usati per prezzi e candele: se CoinGecko è irraggiungibile o applica rate limiting, il filtro viene silenziosamente disattivato per il ciclo (nessun retry, nessun backoff), quindi in quel ciclo possono passare anche crypto poco scambiate.
 - Il rischio per trade usato dai due backtest (§11.1, §11.2) — 1% — non coincide con quello usato realmente in live da `BotSchedulerService` (2%): i risultati dei backtest non sono quindi direttamente comparabili con il comportamento live attuale (le commissioni, 0.6%, sono invece ora allineate). `SyntheticBacktest` mostra inoltre un'etichetta "Commissioni (0.1%)" nel report che non riflette il valore realmente configurato (0.6%).
