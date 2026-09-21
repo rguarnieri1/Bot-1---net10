@@ -239,13 +239,13 @@ public class SyntheticBacktest
             var reportsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "Reports");
             Directory.CreateDirectory(reportsDir);
 
-            var fileName = $"Backtest_Synthetic_{DateTime.Now:yyyy-MM-dd_HHmmss}.txt";
+            var fileName = $"Backtest_Synthetic_{DateTime.UtcNow:yyyy-MM-dd_HHmmss}.txt";
             var filePath = Path.Combine(reportsDir, fileName);
 
             using (var writer = new StreamWriter(filePath))
             {
                 writer.WriteLine("SYNTHETIC BACKTEST REPORT - BOT CRIPTO V1.1");
-                writer.WriteLine($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                writer.WriteLine($"Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
                 writer.WriteLine("");
                 writer.WriteLine($"Period: {result.DaysOfData} days");
                 writer.WriteLine($"Symbols: {result.SymbolsAnalyzed}");

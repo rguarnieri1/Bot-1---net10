@@ -129,8 +129,8 @@ public class NotificationService
     {
         try
         {
-            var logFile = Path.Combine(_logDirectory, $"signals_{DateTime.Now:yyyy-MM-dd}.log");
-            File.AppendAllText(logFile, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}\n");
+            var logFile = Path.Combine(_logDirectory, $"signals_{DateTime.UtcNow:yyyy-MM-dd}.log");
+            File.AppendAllText(logFile, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC - {message}\n");
         }
         catch { }
     }

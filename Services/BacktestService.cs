@@ -239,7 +239,7 @@ public class BacktestService
             var reportsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "Reports");
             Directory.CreateDirectory(reportsDir);
 
-            var fileName = $"Backtest_Report_{DateTime.Now:yyyy-MM-dd_HHmmss}.txt";
+            var fileName = $"Backtest_Report_{DateTime.UtcNow:yyyy-MM-dd_HHmmss}.txt";
             var filePath = Path.Combine(reportsDir, fileName);
 
             File.WriteAllText(filePath, report);
