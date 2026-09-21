@@ -4,7 +4,7 @@ Documentazione tecnica basata sul codice sorgente attuale del progetto `1 - Bot 
 
 ## 1. Panoramica
 
-Bot 1 è un'applicazione console .NET 10 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per volume 24h ≥ $1.000.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Traccia inoltre i motivi di scarto di ogni ciclo (filtro strategia o RiskManager) per diagnosticare perché non vengono generati segnali. Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
+Bot 1 è un'applicazione console .NET 10 per il trading automatico di criptovalute. Analizza periodicamente un ampio paniere di crypto (filtrato per volume 24h ≥ $2.000.000 tramite CoinGecko), applica una strategia trend-following basata su EMA Ribbon, valida ogni segnale con un modulo di risk management e notifica l'utente (console, desktop toast, email). Traccia inoltre i motivi di scarto di ogni ciclo (filtro strategia o RiskManager) per diagnosticare perché non vengono generati segnali. Include anche due modalità di backtest (una "reale" basata su candele storiche e una sintetica basata su distribuzioni statistiche).
 
 Punto di ingresso: `Program.cs`.
 
@@ -112,7 +112,7 @@ Libreria statica condivisa:
 
 **Filtro volume via CoinGecko** (`GetVolumesAsync` + `FilterByVolume`):
 - Prima di interrogare Crypto.com/Bybit, il servizio scarica il volume 24h da `GET https://api.coingecko.com/api/v3/coins/markets` (2 pagine da 250 risultati, ordinate per market cap decrescente → fino a 500 simboli), costruendo un dizionario simbolo→volume 24h (case-insensitive, primo valore vince in caso di duplicati).
-- I ticker ottenuti da Crypto.com o Bybit vengono poi filtrati tenendo solo i simboli presenti nel dizionario con `Volume24h >= $1.000.000` (costante `MinVolume24hUsd`, non letta da `config.json`); il filtro esclude le crypto che scambiano un volume troppo esiguo per essere affidabili (spread larghi, prezzi stantii). Non c'è più alcun filtro di capitalizzazione: è stato rimosso perché ridondante rispetto al volume come indicatore di liquidità/affidabilità.
+- I ticker ottenuti da Crypto.com o Bybit vengono poi filtrati tenendo solo i simboli presenti nel dizionario con `Volume24h >= $2.000.000` (costante `MinVolume24hUsd`, non letta da `config.json`); il filtro esclude le crypto che scambiano un volume troppo esiguo per essere affidabili (spread larghi, prezzi stantii). Non c'è più alcun filtro di capitalizzazione: è stato rimosso perché ridondante rispetto al volume come indicatore di liquidità/affidabilità.
 - Se CoinGecko non è raggiungibile o non risponde entro i tentativi previsti, il dizionario risulta vuoto e il filtro viene **saltato per quel ciclo** (vengono restituiti tutti i ticker non filtrati), con un warning in console.
 
 Caratteristiche generali:
@@ -164,6 +164,7 @@ Genera trade **simulati statisticamente** (non basati su dati di mercato reali):
 - Per ogni combinazione simbolo/trade, genera un prezzo di entrata casuale, decide se vincente in base al `expectedWinRate` fornito, quindi calcola un'uscita con profitto (1-6%) o perdita (0.5-3%) casuale entro range coerenti con SL/TP configurati.
 - Distribuisce le date di apertura/chiusura casualmente entro il periodo richiesto (default 365 giorni, seed `Random(42)` per riproducibilità).
 - Calcola le metriche con `RiskManager.CalculatePerformanceMetrics` e stampa un report esteso (ROI annualizzato, top 5 win/loss, validazione rispetto a soglie 50%/55% di win-rate), salvato in `Data/Reports/Backtest_Synthetic_*.txt`.
+- Istanzia un proprio `RiskManager` con parametri **diversi da quelli usati in live** (§6): rischio 1% per trade, leva max 1.5x, commissioni 0.8% (contro 2% / 2.0x / 0.6% del `BotSchedulerService`). Il report stampa inoltre l'etichetta "Commissioni (0.1%)", disallineata dal valore realmente configurato (0.8%).
 
 ### 11.2 `Services/BacktestService.cs` (non collegato a `Program.cs`, invocabile solo programmaticamente)
 
@@ -172,6 +173,7 @@ Pensato per un backtest su **dati storici reali** scaricati da `CryptoDataServic
 - **Limite noto**: il ciclo che dovrebbe eseguire l'analisi strategia-per-candela (`for i in candlesInRange`) attualmente non chiama la strategia né genera trade reali — è un placeholder che itera senza produrre segnali.
 - `SimulateTradeClosures` chiude eventuali trade aperti con un esito casuale (55% win) per permettere comunque il calcolo delle metriche.
 - Genera un report dettagliato simile a quello sintetico, salvato in `Data/Reports/Backtest_Report_*.txt`.
+- Istanzia un proprio `RiskManager` con gli stessi parametri di `SyntheticBacktest` (rischio 1%, leva max 1.5x, commissioni 0.8%), anch'essi diversi da quelli live.
 
 ## 12. Configurazione
 
@@ -181,7 +183,7 @@ Effettivamente letti dal codice (sezione `Notifications` da `NotificationService
 
 ### 12.2 `config.json`
 
-File di configurazione "di progetto" con schema più ampio (strategie, risk management, reporting, storage, API, ottimizzazioni) — **non referenziato da alcuna classe C#** nel codice attuale. Da considerare come specifica/riferimento per future estensioni, non come sorgente di configurazione runtime. Anche la soglia minima di volume 24h usata dal filtro CoinGecko (§7) è hardcoded in `CryptoDataService` (`MinVolume24hUsd = $1.000.000`) e non proviene da questo file.
+File di configurazione "di progetto" con schema più ampio (strategie, risk management, reporting, storage, API, ottimizzazioni) — **non referenziato da alcuna classe C#** nel codice attuale. Da considerare come specifica/riferimento per future estensioni, non come sorgente di configurazione runtime. Anche la soglia minima di volume 24h usata dal filtro CoinGecko (§7) è hardcoded in `CryptoDataService` (`MinVolume24hUsd = $2.000.000`) e non proviene da questo file.
 
 ## 13. Dipendenze principali (`1 - Bot Cripto.csproj`)
 
@@ -197,3 +199,4 @@ File di configurazione "di progetto" con schema più ampio (strategie, risk mana
 - I livelli RSI di ipercomprato/ipervenduto dichiarati come campo (`70/30`) non corrispondono alle soglie realmente applicate nei controlli di rigetto (`85/15`).
 - Il banner di avvio in `Program.cs` (`RunLiveAsync`) stampa "Risk per Trade: 1% (€1.50)", ma `BotSchedulerService` passa realmente `riskPercentPerTrade: 0.02m` (2%) al `RiskManager`: il testo mostrato all'utente non riflette il rischio effettivamente applicato.
 - Il filtro di volume 24h (§7) dipende da CoinGecko, un terzo provider aggiuntivo rispetto a Crypto.com/Bybit già usati per prezzi e candele: se CoinGecko è irraggiungibile o applica rate limiting, il filtro viene silenziosamente disattivato per il ciclo (nessun retry, nessun backoff), quindi in quel ciclo possono passare anche crypto poco scambiate.
+- I parametri di `RiskManager` usati dai due backtest (§11.1, §11.2) — rischio 1%, leva max 1.5x, commissioni 0.8% — non coincidono con quelli usati realmente in live da `BotSchedulerService` (2%, 2.0x, 0.6%): i risultati dei backtest non sono quindi direttamente comparabili con il comportamento live attuale. `SyntheticBacktest` mostra inoltre un'etichetta "Commissioni (0.1%)" nel report che non riflette il valore realmente configurato (0.8%).

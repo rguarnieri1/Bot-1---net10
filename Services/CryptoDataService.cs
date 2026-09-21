@@ -9,7 +9,7 @@ public class CryptoDataService
     private const string BaseUrl = "https://api.crypto.com/v2";
     private const string BybitBaseUrl = "https://api.bybit.com/v5";
     private const string CoinGeckoBaseUrl = "https://api.coingecko.com/api/v3";
-    private const decimal MinVolume24hUsd = 1_000_000m;
+    private const decimal MinVolume24hUsd = 2_000_000m;
     private readonly List<string> _largeCapCryptos = new();
     private int _apiCallCount = 0;
     private DateTime _lastApiCallTime = DateTime.UtcNow;
