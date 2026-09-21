@@ -52,7 +52,7 @@ appsettings.json / appsettings.local.json    Configurazione runtime (.NET), incl
 Unica strategia attiva nel bot live. Richiede almeno 60 candele. Pipeline di filtri sequenziali (ogni filtro fallito interrompe l'analisi con un `Signal` di rigetto specifico):
 
 1. **EMA Ribbon** — calcola EMA a 5, 10, 20, 50 periodi (`TechnicalIndicators.CalculateEMA`).
-2. **Trend filter (allineamento ribbon)** — richiede allineamento stretto crescente (uptrend: EMA5>EMA10>EMA20>EMA50) o decrescente (downtrend); altrimenti rigetta ("no clear trend").
+2. **Trend filter (allineamento ribbon)** — richiede allineamento stretto crescente (uptrend: EMA5>EMA10>EMA20>EMA30) o decrescente (downtrend); altrimenti rigetta ("no clear trend").
 3. **Volume filter** — il volume dell'ultima candela deve essere ≥ 80% della media mobile a 20 periodi; altrimenti rigetta.
 4. **Candle confirmation** — l'ultima candela deve avere un corpo "solido" (`bodyStrength ≥ 0.6`) nella direzione del trend, e il prezzo deve essere oltre EMA10 nella direzione corretta.
 5. **RSI filter** — calcolato su 14 periodi; rigetta segnali long con RSI > 85 (ipercomprato estremo) o segnali short con RSI < 15 (ipervenduto estremo).
@@ -63,7 +63,7 @@ Se tutti i filtri passano, genera un segnale `BUY` o `SELL` con:
 - `Target` = calcolato con rapporto rischio:rendimento 2:1 rispetto allo stop loss.
 - `SignalStrength` = combinazione di forza del corpo candela e rapporto volume.
 
-Parametri chiave (hardcoded nella classe, non letti da `config.json`): EMA periods `[5,10,20,50]`, volume threshold `1.2`, body strength `0.6`, RSI overbought/oversold `70/30` (dichiarati ma i controlli effettivi usano `85/15`).
+Parametri chiave (hardcoded nella classe, non letti da `config.json`): EMA periods `[5,10,20,30]`, volume threshold `1.2`, body strength `0.6`, RSI overbought/oversold `70/30` (dichiarati ma i controlli effettivi usano `85/15`).
 
 ### 5.2 Indicatori tecnici (`Strategies/TechnicalIndicators.cs`)
 

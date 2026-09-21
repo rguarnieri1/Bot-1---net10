@@ -5,7 +5,7 @@ namespace BotCripto.Strategies;
 public class EmaRibbonTrendFollowingStrategy
 {
     // Configurazione ottimizzata per win rate 60-62%
-    private readonly int[] _emaPeriods = { 5, 10, 20, 50 };
+    private readonly int[] _emaPeriods = { 5, 10, 20, 30 };
     private readonly decimal _volumeMultiplierThreshold = 1.2m;  // Volume almeno 20% sopra media
     private readonly decimal _bodyStrengthThreshold = 0.6m;      // Corpo deve essere 60% della candela
     private readonly int _trendConfirmationCandles = 2;           // Ultime 2 candele devono confermare
@@ -46,19 +46,19 @@ public class EmaRibbonTrendFollowingStrategy
         var lastEma5 = emaRibbon[5].Last();
         var lastEma10 = emaRibbon[10].Last();
         var lastEma20 = emaRibbon[20].Last();
-        var lastEma50 = emaRibbon[50].Last();
+        var lastEma30 = emaRibbon[30].Last();
 
         result.Indicators["EMA5"] = lastEma5;
         result.Indicators["EMA10"] = lastEma10;
         result.Indicators["EMA20"] = lastEma20;
-        result.Indicators["EMA50"] = lastEma50;
+        result.Indicators["EMA30"] = lastEma30;
         result.CurrentPrice = currentPrice;
 
         // 2️⃣ TREND FILTER - Ribbon Alignment Check
-        // Uptrend: EMA5 > EMA10 > EMA20 > EMA50
-        // Downtrend: EMA5 < EMA10 < EMA20 < EMA50
-        bool isUptrendAligned = lastEma5 > lastEma10 && lastEma10 > lastEma20 && lastEma20 > lastEma50;
-        bool isDowntrendAligned = lastEma5 < lastEma10 && lastEma10 < lastEma20 && lastEma20 < lastEma50;
+        // Uptrend: EMA5 > EMA10 > EMA20 > EMA30
+        // Downtrend: EMA5 < EMA10 < EMA20 < EMA30
+        bool isUptrendAligned = lastEma5 > lastEma10 && lastEma10 > lastEma20 && lastEma20 > lastEma30;
+        bool isDowntrendAligned = lastEma5 < lastEma10 && lastEma10 < lastEma20 && lastEma20 < lastEma30;
 
         if (!isUptrendAligned && !isDowntrendAligned)
         {
