@@ -82,7 +82,7 @@ Libreria statica condivisa:
 - Costruttore: inizializza `CryptoDataService`, `NotificationService`, `ReportingService`, `EmaRibbonTrendFollowingStrategy` e `RiskManager` (rischio 2% per trade, R:R 2:1, max posizione 10%, max 100 trade simultanei, commissioni 0.6%, tasse 26%). Nota: questi valori sono hardcoded nel costruttore e differiscono in parte da quelli in `config.json` (che indica 1% di rischio).
 - `StartAsync()`:
   - Esegue subito un primo ciclo di controllo mercato.
-  - Imposta un `Timer` che richiama `CheckMarketAsync()` ogni 60 minuti.
+  - Imposta un `Timer` che richiama `CheckMarketAsync()` ogni 10 minuti.
   - Imposta un secondo `Timer` per generare il report settimanale ogni lunedì alle 00:00 UTC.
   - Rimane in attesa indefinita (`Task.Delay(-1)`).
 - `CheckMarketAsync()` (ciclo principale):
