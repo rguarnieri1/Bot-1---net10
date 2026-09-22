@@ -9,14 +9,12 @@ public class ReportingService
     private readonly string _dataDirectory;
     private readonly string _tradesFile;
     private List<Trade> _trades = new();
-    private readonly NotificationService _notificationService;
 
     public ReportingService()
     {
         _dataDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
         Directory.CreateDirectory(_dataDirectory);
         _tradesFile = Path.Combine(_dataDirectory, "trades.json");
-        _notificationService = new NotificationService();
         LoadTrades();
     }
 
@@ -35,7 +33,7 @@ public class ReportingService
         SaveTrades();
     }
 
-    public async Task CloseTradeAsync(string symbol, decimal exitPrice)
+    public Task CloseTradeAsync(string symbol, decimal exitPrice)
     {
         var trade = _trades.FirstOrDefault(t => t.Symbol == symbol && t.Status == "Open");
         if (trade != null)
@@ -47,14 +45,9 @@ public class ReportingService
             trade.ProfitPercentage = (trade.Profit.Value / trade.EntryPrice) * 100;
             SaveTrades();
             LogClosedTrade(trade);
-            await _notificationService.SendClosedTradeNotificationAsync(
-                trade.Symbol,
-                trade.EntryPrice,
-                trade.ExitPrice.Value,
-                trade.Profit.Value,
-                trade.ProfitPercentage.Value
-            );
         }
+
+        return Task.CompletedTask;
     }
 
     private void LogClosedTrade(Trade trade)
