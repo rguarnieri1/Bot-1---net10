@@ -10,6 +10,7 @@ public class RiskManager
     private readonly decimal _riskPerTrade;
     private readonly decimal _minRewardRatio;
     private readonly decimal _maxPositionSizePercent;
+    private readonly decimal _maxPositionValue;
     private readonly decimal _commissionsPercent;
     private readonly decimal _taxRate;
 
@@ -19,7 +20,8 @@ public class RiskManager
         decimal rewardRiskRatio = 2.0m,
         decimal maxPositionSizePercent = 0.10m,
         decimal commissionsPercent = 0.10m,
-        decimal taxRate = 0.26m)
+        decimal taxRate = 0.26m,
+        decimal maxPositionValue = decimal.MaxValue)
     {
         _accountSize = accountSize;
         _riskPerTrade = accountSize * riskPercentPerTrade;
@@ -27,6 +29,7 @@ public class RiskManager
         _maxPositionSizePercent = maxPositionSizePercent;
         _commissionsPercent = commissionsPercent;
         _taxRate = taxRate;
+        _maxPositionValue = maxPositionValue;
     }
 
     public PositionSizingResult CalculatePosition(
@@ -67,7 +70,8 @@ public class RiskManager
         // 3️⃣ Valida contro massimale per trade: confronto in € sul valore nozionale
         // (positionSize è in unità di asset, non in euro - va convertito prima di confrontarlo
         // con maxPositionValue, altrimenti il cap non scatta quasi mai).
-        var maxPositionValue = currentAccountValue * _maxPositionSizePercent;
+        // Il tetto è il minore tra la % del capitale e l'importo massimo fisso per trade (in €).
+        var maxPositionValue = Math.Min(currentAccountValue * _maxPositionSizePercent, _maxPositionValue);
         var positionValue = positionSize * entryPrice;
         if (positionValue > maxPositionValue)
         {

@@ -14,14 +14,16 @@ public class BotSchedulerService
     private Timer? _weeklyReportTimer;
     private bool _isRunning = false;
 
-    private decimal _currentAccountValue = 1000m;
+    private readonly decimal _initialCapital;
+    private decimal _currentAccountValue;
     private int _checksPerformed = 0;
     private int _signalsGenerated = 0;
     private int _tradesRecorded = 0;
     private readonly Dictionary<string, int> _cumulativeRejectionCounts = new();
 
-    public BotSchedulerService(decimal initialCapital = 1000m)
+    public BotSchedulerService(decimal initialCapital, decimal maxTradeAmount)
     {
+        _initialCapital = initialCapital;
         _dataService = new CryptoDataService();
         _notificationService = new NotificationService();
         _reportingService = new ReportingService();
@@ -32,7 +34,8 @@ public class BotSchedulerService
             rewardRiskRatio: 2.0m,            // 2:1 R:R
             maxPositionSizePercent: 0.10m,    // Max 10% per trade
             commissionsPercent: 0.25m,        // 0.25% commissioni per lato
-            taxRate: 0.26m                    // 26% tasse
+            taxRate: 0.26m,                   // 26% tasse
+            maxPositionValue: maxTradeAmount  // importo massimo per trade (€)
         );
 
         _currentAccountValue = initialCapital;
@@ -208,7 +211,7 @@ public class BotSchedulerService
             if (_checksPerformed % 10 == 0)
             {
                 var allTrades = _reportingService.GetAllTrades();
-                var metrics = _riskManager.CalculatePerformanceMetrics(allTrades, 1000m);
+                var metrics = _riskManager.CalculatePerformanceMetrics(allTrades, _initialCapital);
                 if (metrics.TotalTrades > 0)
                 {
                     Console.WriteLine($"\n📊 Metriche cumulative (dopo {_checksPerformed} cicli):");

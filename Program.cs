@@ -1,4 +1,4 @@
-﻿using BotCripto.Services;
+using BotCripto.Services;
 
 Console.WriteLine(@"
 ╔════════════════════════════════════════════════════════╗
@@ -6,6 +6,10 @@ Console.WriteLine(@"
 ║                 Backtest + Live Trading                ║
 ╚════════════════════════════════════════════════════════╝
 ");
+
+// Capitale totale e importo massimo per singolo trade (€), usati sia dal bot live sia dal backtest
+const decimal InitialCapital = 150m;
+const decimal MaxTradeAmount = 10m;
 
 // Check se è backtest mode
 var cmdArgs = Environment.GetCommandLineArgs();
@@ -42,7 +46,7 @@ else
 
 async Task RunLiveAsync()
 {
-    var scheduler = new BotSchedulerService(initialCapital: 1000m);
+    var scheduler = new BotSchedulerService(InitialCapital, MaxTradeAmount);
 
     Console.WriteLine("Strategia Principale Attiva:");
     Console.WriteLine("  ⭐ EMA Ribbon Trend Following + Candle Confirmation");
@@ -50,11 +54,11 @@ async Task RunLiveAsync()
     Console.WriteLine("     • Configurazione: EMA 5, 10, 20, 30");
     Console.WriteLine("     • Filtri: Volume, Candle Body, RSI, Breakout Confirmation");
     Console.WriteLine("\nImpostazioni:");
-    Console.WriteLine("  • Capitale Iniziale: €1000.00");
+    Console.WriteLine($"  • Capitale Iniziale: €{InitialCapital:F2}");
     Console.WriteLine("  • Intervallo Monitoraggio: 10 minuti");
     Console.WriteLine("  • Max Crypto: 500");
-    Console.WriteLine("  • Risk per Trade: 2% (€20.00)");
-    Console.WriteLine("  • Max Position Size: 10% (€100.00)");
+    Console.WriteLine($"  • Risk per Trade: 2% (€{InitialCapital * 0.02m:F2})");
+    Console.WriteLine($"  • Importo massimo per trade: €{Math.Min(InitialCapital * 0.10m, MaxTradeAmount):F2}");
     Console.WriteLine("  • Report Settimanale: Lunedì 00:00");
     Console.WriteLine("  • Notifiche Desktop: Abilitate");
     Console.WriteLine("  • Tracking Metriche: Ogni 10 cicli");
@@ -77,7 +81,7 @@ async Task RunRealBacktestAsync(DateTime startDate, DateTime endDate)
 {
     Console.WriteLine($"\n🔍 MODALITA' BACKTEST SU DATI STORICI REALI ATTIVATA ({startDate:yyyy-MM-dd} → {endDate:yyyy-MM-dd})\n");
 
-    var backtestService = new BacktestService(initialCapital: 1000m);
+    var backtestService = new BacktestService(InitialCapital, MaxTradeAmount);
 
     try
     {
