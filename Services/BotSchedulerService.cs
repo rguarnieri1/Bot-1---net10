@@ -5,6 +5,11 @@ namespace BotCripto.Services;
 
 public class BotSchedulerService
 {
+    private const int CandlesPerAnalysis = 300;  // stessa finestra del backtest
+    private const int MinCandlesForAnalysis = 60; // minimo richiesto dalla strategia
+    // Un segnale viene valutato solo entro questo tempo dalla chiusura della candela (niente ingressi in ritardo)
+    private static readonly TimeSpan SignalFreshness = TimeSpan.FromMinutes(30);
+
     private readonly CryptoDataService _dataService;
     private readonly NotificationService _notificationService;
     private readonly ReportingService _reportingService;
@@ -13,17 +18,22 @@ public class BotSchedulerService
     private Timer? _marketCheckTimer;
     private Timer? _weeklyReportTimer;
     private bool _isRunning = false;
+    private int _cycleRunning = 0;
 
     private readonly decimal _initialCapital;
+    private readonly string _timeframe;
+    private readonly TimeSpan _timeframeSpan;
     private decimal _currentAccountValue;
     private int _checksPerformed = 0;
     private int _signalsGenerated = 0;
     private int _tradesRecorded = 0;
     private readonly Dictionary<string, int> _cumulativeRejectionCounts = new();
 
-    public BotSchedulerService(decimal initialCapital, decimal maxTradeAmount)
+    public BotSchedulerService(decimal initialCapital, decimal maxTradeAmount, string timeframe, decimal rewardRiskRatio)
     {
         _initialCapital = initialCapital;
+        _timeframe = timeframe;
+        _timeframeSpan = BacktestService.TimeframeToTimeSpan(timeframe);
         _dataService = new CryptoDataService();
         _notificationService = new NotificationService();
         _reportingService = new ReportingService();
@@ -31,7 +41,7 @@ public class BotSchedulerService
         _riskManager = new RiskManager(
             initialCapital,
             riskPercentPerTrade: 0.02m,      // 2% rischio per trade
-            rewardRiskRatio: 2.0m,            // 2:1 R:R
+            rewardRiskRatio: rewardRiskRatio, // take profit = R:R × distanza dello stop
             maxPositionSizePercent: 0.10m,    // Max 10% per trade
             commissionsPercent: 0.25m,        // 0.25% commissioni per lato
             taxRate: 0.26m,                   // 26% tasse
@@ -50,8 +60,8 @@ public class BotSchedulerService
         }
 
         _isRunning = true;
-        Console.WriteLine("\n🤖 Bot Cripto avviato!");
-        Console.WriteLine("📊 Monitoraggio ogni 10 minuti...\n");
+        Console.WriteLine("\n🤖 Bot Cripto avviato! (paper trading: nessun ordine reale)");
+        Console.WriteLine($"📊 Monitoraggio ogni 10 minuti, candele {_timeframe}...\n");
 
         // Esegui il primo controllo immediatamente
         await CheckMarketAsync();
@@ -94,19 +104,42 @@ public class BotSchedulerService
 
     private async Task CheckMarketAsync()
     {
+        // Il timer scatta ogni 10 minuti anche se il ciclo precedente non è finito: mai due cicli insieme,
+        // altrimenti lo stesso segnale verrebbe registrato due volte.
+        if (Interlocked.Exchange(ref _cycleRunning, 1) == 1)
+        {
+            Console.WriteLine("⏭️  Ciclo precedente ancora in corso: questo ciclo viene saltato.");
+            return;
+        }
+
         try
         {
             _checksPerformed++;
-            Console.WriteLine($"\n⏱️  Ciclo #{_checksPerformed} - {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            var now = DateTime.UtcNow;
+            Console.WriteLine($"\n⏱️  Ciclo #{_checksPerformed} - {now:yyyy-MM-dd HH:mm:ss} UTC");
 
-            // Recupera tutte le criptovalute
-            var cryptos = await _dataService.GetLargeCapCryptocurrenciesAsync();
-            Console.WriteLine($"📈 Analizzando {cryptos.Count} criptovalute (max 500 per performance)...");
+            var candleCache = new Dictionary<string, List<Candle>>();
+            async Task<List<Candle>> GetCandlesCachedAsync(string symbol)
+            {
+                if (!candleCache.TryGetValue(symbol, out var cached))
+                {
+                    cached = (await _dataService.GetCandlesAsync(symbol, _timeframe, CandlesPerAnalysis)).OrderBy(c => c.Time).ToList();
+                    candleCache[symbol] = cached;
+                }
+                return cached;
+            }
+
+            // 1) Paper trading: chiudi i trade aperti che hanno toccato stop loss o target
+            int tradesClosed = await CloseTradesAtStopOrTargetAsync(GetCandlesCachedAsync);
+
+            // Trade gestiti dal paper trading (quelli registrati prima non hanno stop/target e vengono ignorati)
+            var managedTrades = _reportingService.GetAllTrades().Where(t => t.IsPaperManaged).ToList();
+            var openTrades = managedTrades.Where(t => t.Status == "Open").ToList();
+            _currentAccountValue = _initialCapital + managedTrades.Where(t => t.Status == "Closed").Sum(t => t.Profit ?? 0);
 
             int signalsFound = 0;
             int signalsFiltered = 0;
             var rejectionCounts = new Dictionary<string, int>();
-            var openTrades = _reportingService.GetAllTrades().Where(t => t.Status == "Open").ToList();
 
             void CountRejection(string category)
             {
@@ -117,86 +150,137 @@ public class BotSchedulerService
                 _cumulativeRejectionCounts[category] = cc + 1;
             }
 
-            // Regime di mercato BTC per questo ciclo (filtro direzionale della strategia)
-            var btcBullish = EmaRibbonTrendFollowingStrategy.IsBtcBullish(
-                await _dataService.GetCandlesAsync("BTC", "4h", 100));
-            Console.WriteLine($"₿ Regime BTC: {(btcBullish == null ? "sconosciuto (nessun segnale)" : btcBullish.Value ? "rialzista (solo long)" : "ribassista (solo short)")}");
+            // 2) I segnali si valutano solo su candele chiuse (come nel backtest) e solo subito dopo la chiusura
+            var btcClosed = ClosedCandles(await GetCandlesCachedAsync("BTC"), now);
+            var lastClosedTime = btcClosed.Count > 0 ? btcClosed.Last().Time : (DateTime?)null;
+            var lastCloseEnd = lastClosedTime + _timeframeSpan;
+            bool newCandle = lastCloseEnd != null && now - lastCloseEnd.Value <= SignalFreshness;
 
-            foreach (var crypto in cryptos)
+            if (!newCandle)
             {
-                try
-                {
-                    // Recupera candele per l'analisi
-                    var candles = await _dataService.GetCandlesAsync(crypto.Symbol, "4h", 100);
+                var nextClose = lastCloseEnd?.Add(_timeframeSpan);
+                Console.WriteLine($"🕒 Nessuna candela {_timeframe} appena chiusa: ricerca segnali alla prossima chiusura ({nextClose:yyyy-MM-dd HH:mm} UTC).");
+            }
+            else
+            {
+                // Regime di mercato BTC sulla candela appena chiusa (filtro direzionale della strategia)
+                var btcBullish = EmaRibbonTrendFollowingStrategy.IsBtcBullish(btcClosed);
+                Console.WriteLine($"🕯️  Candela {_timeframe} chiusa alle {lastCloseEnd:yyyy-MM-dd HH:mm} UTC: ricerca segnali");
+                Console.WriteLine($"₿ Regime BTC: {(btcBullish == null ? "sconosciuto (nessun segnale)" : btcBullish.Value ? "rialzista (solo long)" : "ribassista (solo short)")}");
 
-                    if (candles.Count < 50)
+                var cryptos = await _dataService.GetLargeCapCryptocurrenciesAsync();
+                Console.WriteLine($"📈 Analizzando {cryptos.Count} criptovalute (max 500 per performance)...");
+
+                var allTrades = _reportingService.GetAllTrades();
+                var candidates = new List<(Cryptocurrency crypto, AnalysisResult analysis, List<Candle> candles)>();
+
+                foreach (var crypto in cryptos)
+                {
+                    try
                     {
-                        CountRejection("Dati insufficienti (candele < 50)");
+                        if (openTrades.Any(t => t.Symbol == crypto.Symbol))
+                        {
+                            CountRejection("Posizione già aperta sul simbolo");
+                            continue;
+                        }
+
+                        if (allTrades.Any(t => t.Symbol == crypto.Symbol && t.SignalCandleTime == lastClosedTime))
+                        {
+                            CountRejection("Segnale di questa candela già registrato");
+                            continue;
+                        }
+
+                        var candles = ClosedCandles(await GetCandlesCachedAsync(crypto.Symbol), now);
+
+                        if (candles.Count < MinCandlesForAnalysis)
+                        {
+                            CountRejection($"Dati insufficienti (candele < {MinCandlesForAnalysis})");
+                            continue;
+                        }
+
+                        if (candles.Last().Time != lastClosedTime)
+                        {
+                            CountRejection("Ultima candela non aggiornata");
+                            continue;
+                        }
+
+                        // ✅ STRATEGIA PRINCIPALE: EMA Ribbon Trend Following + Candle Confirmation
+                        var emaRibbonResult = _emaRibbonStrategy.Analyze(crypto.Symbol, candles, btcBullish);
+
+                        if (emaRibbonResult.IsSignal)
+                            candidates.Add((crypto, emaRibbonResult, candles));
+                        else
+                            CountRejection(ClassifyStrategyRejection(emaRibbonResult.Signal));
+
+                        await Task.Delay(50);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"   ⚠️  {crypto.Symbol}: {ex.Message}");
+                    }
+                }
+
+                // Dal segnale più forte al più debole: quando il capitale non basta per tutti entrano prima i migliori
+                foreach (var (crypto, emaRibbonResult, candles) in candidates.OrderByDescending(c => c.analysis.Indicators.GetValueOrDefault("SignalStrength")))
+                {
+                    var isLong = emaRibbonResult.Signal.Contains("BUY");
+                    var positionResult = _riskManager.CalculatePosition(
+                        crypto.Symbol,
+                        crypto.CurrentPrice,
+                        CalculateVolatility(candles),
+                        openTrades,
+                        _currentAccountValue,
+                        isLong,
+                        emaRibbonResult.Indicators.GetValueOrDefault("StopLoss")
+                    );
+
+                    if (!positionResult.IsValid)
+                    {
+                        signalsFiltered++;
+                        CountRejection(ClassifyRiskRejection(positionResult.Reason));
                         continue;
                     }
 
-                    var volatilityPercent = CalculateVolatility(candles);
-
-                    // ✅ STRATEGIA PRINCIPALE: EMA RIBBON TREND FOLLOWING
-
-                    // 1️⃣ EMA Ribbon Trend Following + Candle Confirmation (Principale - Win Rate 60-62%)
-                    var emaRibbonResult = _emaRibbonStrategy.Analyze(crypto.Symbol, candles, btcBullish);
-
-                    if (emaRibbonResult.IsSignal)
+                    // Niente leva: la posizione deve entrare nel capitale non ancora impegnato
+                    var committed = openTrades.Sum(t => t.EntryPrice * t.PositionSize);
+                    if (committed + crypto.CurrentPrice * positionResult.PositionSize > _currentAccountValue)
                     {
-                        // Valida con RiskManager
-                        var positionResult = _riskManager.CalculatePosition(
-                            crypto.Symbol,
-                            crypto.CurrentPrice,
-                            volatilityPercent,
-                            openTrades,
-                            _currentAccountValue,
-                            emaRibbonResult.Signal.Contains("BUY"),
-                            emaRibbonResult.Indicators.GetValueOrDefault("StopLoss")
-                        );
-
-                        if (positionResult.IsValid)
-                        {
-                            emaRibbonResult.Indicators["PositionSize"] = positionResult.PositionSize;
-                            emaRibbonResult.Indicators["RiskRewardRatio"] = positionResult.RiskRewardRatio;
-                            emaRibbonResult.Indicators["Leverage"] = positionResult.LeverageRatio;
-                            emaRibbonResult.Indicators["ExpectedProfit"] = positionResult.ExpectedProfit;
-
-                            await _notificationService.SendNotificationAsync(emaRibbonResult);
-                            _reportingService.RecordTrade(
-                                crypto.Symbol,
-                                crypto.CurrentPrice,
-                                "EMA Ribbon Trend Following (Primary)");
-
-                            _signalsGenerated++;
-                            _tradesRecorded++;
-                            signalsFound++;
-                        }
-                        else
-                        {
-                            signalsFiltered++;
-                            CountRejection(ClassifyRiskRejection(positionResult.Reason));
-                        }
-                    }
-                    else
-                    {
-                        CountRejection(ClassifyStrategyRejection(emaRibbonResult.Signal));
+                        signalsFiltered++;
+                        CountRejection("Capitale già impegnato");
+                        continue;
                     }
 
-                    await Task.Delay(50);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"   ⚠️  {crypto.Symbol}: {ex.Message}");
+                    emaRibbonResult.Indicators["StopLoss"] = positionResult.StopLossPrice;
+                    emaRibbonResult.Indicators["Target"] = positionResult.TargetPrice;
+                    emaRibbonResult.Indicators["PositionSize"] = positionResult.PositionSize;
+                    emaRibbonResult.Indicators["RiskRewardRatio"] = positionResult.RiskRewardRatio;
+                    emaRibbonResult.Indicators["Leverage"] = positionResult.LeverageRatio;
+                    emaRibbonResult.Indicators["ExpectedProfit"] = positionResult.ExpectedProfit;
+
+                    await _notificationService.SendNotificationAsync(emaRibbonResult);
+                    openTrades.Add(_reportingService.RecordTrade(
+                        crypto.Symbol,
+                        crypto.CurrentPrice,
+                        "EMA Ribbon Trend Following (Primary)",
+                        isLong,
+                        positionResult.StopLossPrice,
+                        positionResult.TargetPrice,
+                        positionResult.PositionSize,
+                        lastClosedTime!.Value));
+
+                    _signalsGenerated++;
+                    _tradesRecorded++;
+                    signalsFound++;
                 }
             }
 
             // Report del ciclo
             Console.WriteLine($"\n✅ Ciclo completato:");
+            Console.WriteLine($"   • Trade chiusi (stop/target): {tradesClosed}");
             Console.WriteLine($"   • Segnali trovati: {signalsFound}");
-            Console.WriteLine($"   • Segnali filtrati (rischio): {signalsFiltered}");
-            Console.WriteLine($"   • Trade aperti: {openTrades.Count}");
-            Console.WriteLine($"   • Account value (stimato): €{_currentAccountValue:F2}");
+            Console.WriteLine($"   • Segnali filtrati (rischio/capitale): {signalsFiltered}");
+            Console.WriteLine($"   • Trade aperti: {openTrades.Count} (capitale impegnato €{openTrades.Sum(t => t.EntryPrice * t.PositionSize):F2})");
+            Console.WriteLine($"   • Account value (realizzato): €{_currentAccountValue:F2}");
 
             if (rejectionCounts.Count > 0)
             {
@@ -210,14 +294,14 @@ public class BotSchedulerService
             // Calcola e mostra metriche giornaliere ogni 10 cicli
             if (_checksPerformed % 10 == 0)
             {
-                var allTrades = _reportingService.GetAllTrades();
-                var metrics = _riskManager.CalculatePerformanceMetrics(allTrades, _initialCapital);
+                var metrics = _riskManager.CalculatePerformanceMetrics(managedTrades, _initialCapital);
                 if (metrics.TotalTrades > 0)
                 {
-                    Console.WriteLine($"\n📊 Metriche cumulative (dopo {_checksPerformed} cicli):");
+                    Console.WriteLine($"\n📊 Metriche cumulative paper trading (dopo {_checksPerformed} cicli):");
+                    Console.WriteLine($"   • Trade chiusi: {metrics.TotalTrades}");
                     Console.WriteLine($"   • Win Rate: {metrics.WinRate:P}");
                     Console.WriteLine($"   • Profit Factor: {metrics.ProfitFactor:F2}");
-                    Console.WriteLine($"   • Total P&L: €{metrics.TotalProfit:F2}");
+                    Console.WriteLine($"   • Total P&L (netto commissioni): €{metrics.TotalProfit:F2}");
                     Console.WriteLine($"   • Expectancy: €{metrics.Expectancy:F2}");
                 }
 
@@ -235,6 +319,54 @@ public class BotSchedulerService
         {
             Console.WriteLine($"❌ Errore nel controllo del mercato: {ex.Message}");
         }
+        finally
+        {
+            Interlocked.Exchange(ref _cycleRunning, 0);
+        }
+    }
+
+    // Candele il cui periodo è già terminato (Time è l'inizio della candela): esclude quella ancora in formazione.
+    private List<Candle> ClosedCandles(List<Candle> candles, DateTime now) =>
+        candles.Where(c => c.Time + _timeframeSpan <= now).ToList();
+
+    // Paper trading: stessa regola del backtest. Un trade si chiude quando una candela successiva a quella
+    // del segnale tocca lo stop loss o il target; se li tocca entrambi si assume lo stop (ipotesi conservativa).
+    private async Task<int> CloseTradesAtStopOrTargetAsync(Func<string, Task<List<Candle>>> getCandlesAsync)
+    {
+        int closed = 0;
+        var openTrades = _reportingService.GetAllTrades().Where(t => t.Status == "Open" && t.IsPaperManaged).ToList();
+
+        foreach (var trade in openTrades)
+        {
+            try
+            {
+                var candles = await getCandlesAsync(trade.Symbol);
+                foreach (var candle in candles.Where(c => c.Time > trade.SignalCandleTime))
+                {
+                    bool hitStop = trade.IsLong ? candle.Low <= trade.StopLoss : candle.High >= trade.StopLoss;
+                    bool hitTarget = trade.IsLong ? candle.High >= trade.TargetPrice : candle.Low <= trade.TargetPrice;
+                    if (!hitStop && !hitTarget)
+                        continue;
+
+                    var exitPrice = hitStop ? trade.StopLoss : trade.TargetPrice;
+                    var profitCalc = _riskManager.CalculateProfitAndTaxes(
+                        trade.EntryPrice, exitPrice, trade.PositionSize, !hitStop, trade.IsLong);
+                    var profit = profitCalc.NetProfitBeforeTax; // tasse sul saldo netto del periodo, non per trade
+                    var profitPercent = profit / (trade.EntryPrice * trade.PositionSize) * 100;
+
+                    _reportingService.ClosePaperTrade(trade, exitPrice, profit, profitPercent, hitStop ? "Stop loss" : "Target");
+                    Console.WriteLine($"   {(profit > 0 ? "✅" : "❌")} Chiuso {trade.Symbol} {(trade.IsLong ? "LONG" : "SHORT")} per {(hitStop ? "stop loss" : "target")}: €{profit:F2} ({profitPercent:F2}%)");
+                    closed++;
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"   ⚠️  {trade.Symbol} (gestione trade aperto): {ex.Message}");
+            }
+        }
+
+        return closed;
     }
 
     // Raggruppa i motivi di scarto della strategia in categorie leggibili per la diagnostica.

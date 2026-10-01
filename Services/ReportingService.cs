@@ -18,7 +18,9 @@ public class ReportingService
         LoadTrades();
     }
 
-    public void RecordTrade(string symbol, decimal entryPrice, string strategy)
+    // Registra un trade simulato (paper trading) con i livelli di uscita, così può essere chiuso su stop/target.
+    public Trade RecordTrade(string symbol, decimal entryPrice, string strategy,
+        bool isLong, decimal stopLoss, decimal targetPrice, decimal positionSize, DateTime signalCandleTime)
     {
         var trade = new Trade
         {
@@ -26,11 +28,30 @@ public class ReportingService
             EntryPrice = entryPrice,
             OpenTime = DateTime.UtcNow,
             Strategy = strategy,
-            Status = "Open"
+            Status = "Open",
+            IsLong = isLong,
+            StopLoss = stopLoss,
+            TargetPrice = targetPrice,
+            PositionSize = positionSize,
+            SignalCandleTime = signalCandleTime
         };
 
         _trades.Add(trade);
         SaveTrades();
+        return trade;
+    }
+
+    // Chiude un trade simulato. profit è in € al netto delle commissioni (prima delle tasse).
+    public void ClosePaperTrade(Trade trade, decimal exitPrice, decimal profit, decimal profitPercentage, string exitReason)
+    {
+        trade.ExitPrice = exitPrice;
+        trade.CloseTime = DateTime.UtcNow;
+        trade.Status = "Closed";
+        trade.Profit = profit;
+        trade.ProfitPercentage = profitPercentage;
+        trade.ExitReason = exitReason;
+        SaveTrades();
+        LogClosedTrade(trade);
     }
 
     public Task CloseTradeAsync(string symbol, decimal exitPrice)
@@ -63,9 +84,15 @@ public class ReportingService
             logEntry.AppendLine($"\n{'═'} OPERAZIONE CHIUSA - {trade.CloseTime:yyyy-MM-dd HH:mm:ss} {'═'}");
             logEntry.AppendLine($"Simbolo: {trade.Symbol}");
             logEntry.AppendLine($"Strategia: {trade.Strategy}");
+            if (trade.IsPaperManaged)
+            {
+                logEntry.AppendLine($"Direzione: {(trade.IsLong ? "LONG" : "SHORT")} (paper trading)");
+                logEntry.AppendLine($"Stop Loss: ${trade.StopLoss:F8} | Target: ${trade.TargetPrice:F8}");
+                logEntry.AppendLine($"Motivo uscita: {trade.ExitReason}");
+            }
             logEntry.AppendLine($"Prezzo Entrata: ${trade.EntryPrice:F8}");
             logEntry.AppendLine($"Prezzo Uscita: ${trade.ExitPrice:F8}");
-            logEntry.AppendLine($"Profitto: ${trade.Profit:F8}");
+            logEntry.AppendLine($"Profitto: {trade.Profit:F8}");
             logEntry.AppendLine($"Percentuale: {trade.ProfitPercentage:F2}%");
             logEntry.AppendLine($"Stato: {trade.Status}");
             logEntry.AppendLine($"Apertura: {trade.OpenTime:yyyy-MM-dd HH:mm:ss}");
@@ -86,7 +113,8 @@ public class ReportingService
         var weekStartDate = DateTime.UtcNow.AddDays(-(int)DateTime.UtcNow.DayOfWeek);
         var weekEndDate = weekStartDate.AddDays(7);
 
-        var weekTrades = _trades.Where(t =>
+        // Solo i trade gestiti dal paper trading (quelli precedenti non hanno stop/target né P&L)
+        var weekTrades = _trades.Where(t => t.IsPaperManaged &&
             t.OpenTime >= weekStartDate && t.OpenTime < weekEndDate).ToList();
 
         var closedTrades = weekTrades.Where(t => t.Status == "Closed").ToList();
@@ -110,7 +138,7 @@ public class ReportingService
         report.AppendLine($"   • Operazioni Aperte: {openTrades.Count}");
 
         report.AppendLine($"\n💰 PERFORMANCE:");
-        report.AppendLine($"   • Profitto Totale: ${totalProfit:F2}");
+        report.AppendLine($"   • Profitto Totale (netto commissioni): €{totalProfit:F2}");
         report.AppendLine($"   • ROI Medio: {totalProfitPercentage:F2}%");
         report.AppendLine($"   • Win Rate: {winRate:F2}%");
 

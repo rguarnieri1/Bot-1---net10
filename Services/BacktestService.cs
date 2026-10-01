@@ -7,8 +7,18 @@ namespace BotCripto.Services;
 public class BacktestService
 {
     private const int WarmupCandles = 60; // candele minime richieste dalla strategia prima di poter generare segnali
-    private const int WarmupDays = 20;    // storico scaricato prima di startDate per il calcolo degli indicatori
+    private const int MinWarmupDays = 20; // storico minimo scaricato prima di startDate per il calcolo degli indicatori
     private const int LookbackCandles = 300; // candele passate alla strategia a ogni passo (come nel download standard)
+
+    public static TimeSpan TimeframeToTimeSpan(string timeframe) => timeframe switch
+    {
+        "1h" => TimeSpan.FromHours(1),
+        "2h" => TimeSpan.FromHours(2),
+        "6h" => TimeSpan.FromHours(6),
+        "12h" => TimeSpan.FromHours(12),
+        "1d" => TimeSpan.FromDays(1),
+        _ => TimeSpan.FromHours(4)
+    };
 
     // Ultime LookbackCandles candele fino a idx incluso
     private static List<Candle> Window(List<Candle> candles, int idx)
@@ -22,7 +32,7 @@ public class BacktestService
     private readonly EmaRibbonTrendFollowingStrategy _strategy;
     private readonly decimal _initialCapital;
 
-    public BacktestService(decimal initialCapital, decimal maxTradeAmount)
+    public BacktestService(decimal initialCapital, decimal maxTradeAmount, decimal rewardRiskRatio = 2.0m)
     {
         _initialCapital = initialCapital;
         _dataService = new CryptoDataService();
@@ -30,7 +40,7 @@ public class BacktestService
         _riskManager = new RiskManager(
             initialCapital,
             riskPercentPerTrade: 0.02m,
-            rewardRiskRatio: 2.0m,
+            rewardRiskRatio: rewardRiskRatio,
             maxPositionSizePercent: 0.10m,
             commissionsPercent: 0.25m,
             taxRate: TaxRate,
@@ -75,7 +85,9 @@ public class BacktestService
         DateTime? latestTestedCandle = null;
 
         // Regime BTC per ogni candela: calcolato solo sulle candele BTC disponibili fino a quel momento
-        var historyFrom = startDate.AddDays(-WarmupDays);
+        // Riscaldamento: almeno WarmupCandles + 60 candele del timeframe (es. 1d → 120 giorni), minimo 20 giorni
+        var warmup = TimeSpan.FromTicks(Math.Max(TimeSpan.FromDays(MinWarmupDays).Ticks, TimeframeToTimeSpan(timeframe).Ticks * (WarmupCandles + 60)));
+        var historyFrom = startDate - warmup;
         var btcCandles = await _dataService.GetHistoricalCandlesAsync("BTC", timeframe, historyFrom, endDate);
         var btcRegime = new Dictionary<DateTime, bool?>();
         for (int i = 0; i < btcCandles.Count; i++)
@@ -110,6 +122,7 @@ public class BacktestService
         decimal realizedPnl = 0m;
         decimal peakEquity = _initialCapital;
         decimal maxDrawdown = 0m;
+        decimal maxDrawdownAmount = 0m;
 
         void ClosePosition(string symbol, decimal exitPrice, DateTime time, bool isWin)
         {
@@ -234,6 +247,7 @@ public class BacktestService
             peakEquity = Math.Max(peakEquity, markedEquity);
             if (peakEquity > 0)
                 maxDrawdown = Math.Max(maxDrawdown, (peakEquity - markedEquity) / peakEquity);
+            maxDrawdownAmount = Math.Max(maxDrawdownAmount, peakEquity - markedEquity);
         }
 
         // Una posizione ancora aperta a fine periodo viene chiusa al prezzo dell'ultima candela
@@ -258,6 +272,7 @@ public class BacktestService
         backtestResult.SignalsSkippedForCapital = skippedForCapital;
         backtestResult.MaxConcurrentPositions = maxConcurrent;
         backtestResult.MaxDrawdownPercent = maxDrawdown * 100;
+        backtestResult.MaxDrawdownAmount = maxDrawdownAmount;
 
         Console.WriteLine($"\n✅ BACKTEST COMPLETATO ({backtestResult.Trades.Count} trade chiusi da {candleSetsAnalyzed} simboli con dati sufficienti, di cui {closedAtEnd} chiusi a fine periodo al prezzo di mercato)");
 
@@ -302,7 +317,7 @@ public class BacktestService
         sb.AppendLine($"   • P&L netto totale: €{netPnl:F2}");
         sb.AppendLine($"   • ROI netto: {netPnl / result.InitialCapital * 100:F2}%");
         sb.AppendLine($"   • Capitale finale (dopo le tasse): €{result.InitialCapital + netPnl:F2}");
-        sb.AppendLine($"   • Drawdown massimo (a valore di mercato): {result.MaxDrawdownPercent:F2}%");
+        sb.AppendLine($"   • Drawdown massimo (a valore di mercato): {result.MaxDrawdownPercent:F2}% (€{result.MaxDrawdownAmount:F2})");
 
         sb.AppendLine($"\n🎯 PERFORMANCE METRICS:");
         sb.AppendLine($"   • Trade chiusi: {result.Metrics.TotalTrades}");
@@ -385,6 +400,7 @@ public class BacktestResult
     public int SignalsSkippedForCapital { get; set; }
     public int MaxConcurrentPositions { get; set; }
     public decimal MaxDrawdownPercent { get; set; }
+    public decimal MaxDrawdownAmount { get; set; }
     public List<Trade> Trades { get; set; } = new();
     public List<AnalysisResult> AnalysisResults { get; set; } = new();
     public PerformanceMetrics Metrics { get; set; } = new();

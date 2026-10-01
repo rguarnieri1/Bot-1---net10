@@ -63,6 +63,30 @@ public class Trade
     [JsonProperty("ProfitPercentage")]
     public decimal? ProfitPercentage { get; set; }
 
+    // Dati del paper trading: direzione, livelli di uscita e dimensione (unità dell'asset).
+    // I trade registrati prima dell'introduzione del paper trading hanno PositionSize = 0 e non vengono gestiti.
+    [JsonProperty("IsLong")]
+    public bool IsLong { get; set; } = true;
+
+    [JsonProperty("StopLoss")]
+    public decimal StopLoss { get; set; }
+
+    [JsonProperty("TargetPrice")]
+    public decimal TargetPrice { get; set; }
+
+    [JsonProperty("PositionSize")]
+    public decimal PositionSize { get; set; }
+
+    // Inizio della candela chiusa che ha generato il segnale
+    [JsonProperty("SignalCandleTime")]
+    public DateTime? SignalCandleTime { get; set; }
+
+    [JsonProperty("ExitReason")]
+    public string? ExitReason { get; set; }
+
+    [JsonIgnore]
+    public bool IsPaperManaged => PositionSize > 0;
+
     public Trade()
     {
         Id = Guid.NewGuid().ToString();

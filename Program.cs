@@ -10,6 +10,10 @@ Console.WriteLine(@"
 // Capitale totale e importo massimo per singolo trade (€), usati sia dal bot live sia dal backtest
 const decimal InitialCapital = 150m;
 const decimal MaxTradeAmount = 10m;
+// Timeframe delle candele: 12h ha dato i risultati migliori nei backtest (apr-set 2026 e ott 2025-mar 2026)
+const string Timeframe = "12h";
+// Take profit come multiplo della distanza dello stop: 3x è il valore migliore nel backtest 12h su 12 mesi
+const decimal RewardRiskRatio = 3.0m;
 
 // Check se è backtest mode
 var cmdArgs = Environment.GetCommandLineArgs();
@@ -22,22 +26,44 @@ if (isBacktestMode)
 }
 else if (isRealBacktestMode)
 {
-    // --backtest-real [giorni]  oppure  --backtest-real yyyy-MM-dd yyyy-MM-dd
+    // --backtest-real [giorni | yyyy-MM-dd yyyy-MM-dd] [--timeframe 1h|2h|4h|6h|12h|1d] [--capital €] [--symbols file] [--rr rapporto]
+    // --rr: take profit come multiplo della distanza dello stop (default RewardRiskRatio)
+    // --symbols: elenco di simboli da usare (uno per riga); se il file non esiste viene creato con
+    //            l'elenco scaricato, così più backtest possono usare esattamente lo stesso paniere.
+    var positional = new List<string>();
+    var timeframe = Timeframe;
+    var capital = InitialCapital;
+    string? symbolsFile = null;
+    var rewardRisk = RewardRiskRatio;
+    for (int a = 2; a < cmdArgs.Length; a++)
+    {
+        if (cmdArgs[a] == "--timeframe" && a + 1 < cmdArgs.Length)
+            timeframe = cmdArgs[++a];
+        else if (cmdArgs[a] == "--capital" && a + 1 < cmdArgs.Length)
+            capital = decimal.Parse(cmdArgs[++a], System.Globalization.CultureInfo.InvariantCulture);
+        else if (cmdArgs[a] == "--symbols" && a + 1 < cmdArgs.Length)
+            symbolsFile = cmdArgs[++a];
+        else if (cmdArgs[a] == "--rr" && a + 1 < cmdArgs.Length)
+            rewardRisk = decimal.Parse(cmdArgs[++a], System.Globalization.CultureInfo.InvariantCulture);
+        else
+            positional.Add(cmdArgs[a]);
+    }
+
     var endDate = DateTime.UtcNow;
     var startDate = endDate.AddDays(-30);
     var dateStyle = System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal;
-    if (cmdArgs.Length > 3
-        && DateTime.TryParseExact(cmdArgs[2], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var fromDate)
-        && DateTime.TryParseExact(cmdArgs[3], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var toDate))
+    if (positional.Count >= 2
+        && DateTime.TryParseExact(positional[0], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var fromDate)
+        && DateTime.TryParseExact(positional[1], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var toDate))
     {
         startDate = fromDate;
         endDate = toDate.AddDays(1).AddTicks(-1); // data finale inclusa
     }
-    else if (cmdArgs.Length > 2 && int.TryParse(cmdArgs[2], out var parsedDays))
+    else if (positional.Count >= 1 && int.TryParse(positional[0], out var parsedDays))
     {
         startDate = endDate.AddDays(-parsedDays);
     }
-    await RunRealBacktestAsync(startDate, endDate);
+    await RunRealBacktestAsync(startDate, endDate, timeframe, capital, symbolsFile, rewardRisk);
 }
 else
 {
@@ -46,21 +72,21 @@ else
 
 async Task RunLiveAsync()
 {
-    var scheduler = new BotSchedulerService(InitialCapital, MaxTradeAmount);
+    var scheduler = new BotSchedulerService(InitialCapital, MaxTradeAmount, Timeframe, RewardRiskRatio);
 
     Console.WriteLine("Strategia Principale Attiva:");
     Console.WriteLine("  ⭐ EMA Ribbon Trend Following + Candle Confirmation");
-    Console.WriteLine("     • Win Rate Atteso: 60-62%");
-    Console.WriteLine("     • Configurazione: EMA 5, 10, 20, 30");
-    Console.WriteLine("     • Filtri: Volume, Candle Body, RSI, Breakout Confirmation");
+    Console.WriteLine($"     • Configurazione: EMA 5, 10, 20, 30 su candele {Timeframe}");
+    Console.WriteLine("     • Filtri: Volume, Candle Body, RSI, Breakout Confirmation, Regime BTC");
+    Console.WriteLine("     • Modalità: paper trading (segnali e trade simulati, nessun ordine reale)");
     Console.WriteLine("\nImpostazioni:");
     Console.WriteLine($"  • Capitale Iniziale: €{InitialCapital:F2}");
     Console.WriteLine("  • Intervallo Monitoraggio: 10 minuti");
     Console.WriteLine("  • Max Crypto: 500");
     Console.WriteLine($"  • Risk per Trade: 2% (€{InitialCapital * 0.02m:F2})");
     Console.WriteLine($"  • Importo massimo per trade: €{Math.Min(InitialCapital * 0.10m, MaxTradeAmount):F2}");
+    Console.WriteLine($"  • Take profit: {RewardRiskRatio}x la distanza dello stop");
     Console.WriteLine("  • Report Settimanale: Lunedì 00:00");
-    Console.WriteLine("  • Notifiche Desktop: Abilitate");
     Console.WriteLine("  • Tracking Metriche: Ogni 10 cicli");
 
     try
@@ -77,19 +103,33 @@ async Task RunLiveAsync()
     }
 }
 
-async Task RunRealBacktestAsync(DateTime startDate, DateTime endDate)
+async Task RunRealBacktestAsync(DateTime startDate, DateTime endDate, string timeframe, decimal capital, string? symbolsFile, decimal rewardRisk)
 {
-    Console.WriteLine($"\n🔍 MODALITA' BACKTEST SU DATI STORICI REALI ATTIVATA ({startDate:yyyy-MM-dd} → {endDate:yyyy-MM-dd})\n");
+    Console.WriteLine($"\n🔍 MODALITA' BACKTEST SU DATI STORICI REALI ATTIVATA ({startDate:yyyy-MM-dd} → {endDate:yyyy-MM-dd}, {timeframe}, capitale €{capital:F2}, R:R {rewardRisk})\n");
 
-    var backtestService = new BacktestService(InitialCapital, MaxTradeAmount);
+    var backtestService = new BacktestService(capital, MaxTradeAmount, rewardRisk);
 
     try
     {
-        var dataService = new CryptoDataService();
-        var cryptos = await dataService.GetLargeCapCryptocurrenciesAsync();
-        var symbols = cryptos.Select(c => c.Symbol).ToList();
+        List<string> symbols;
+        if (symbolsFile != null && File.Exists(symbolsFile))
+        {
+            symbols = File.ReadAllLines(symbolsFile).Select(s => s.Trim()).Where(s => s.Length > 0).Distinct().ToList();
+            Console.WriteLine($"📄 Simboli letti da {symbolsFile}: {symbols.Count}");
+        }
+        else
+        {
+            var dataService = new CryptoDataService();
+            var cryptos = await dataService.GetLargeCapCryptocurrenciesAsync();
+            symbols = cryptos.Select(c => c.Symbol).ToList();
+            if (symbolsFile != null)
+            {
+                File.WriteAllLines(symbolsFile, symbols);
+                Console.WriteLine($"📄 Elenco simboli salvato in {symbolsFile}");
+            }
+        }
 
-        var result = await backtestService.RunBacktestAsync(symbols, startDate, endDate, "4h");
+        var result = await backtestService.RunBacktestAsync(symbols, startDate, endDate, timeframe);
         backtestService.PrintBacktestReport(result);
     }
     catch (Exception ex)
