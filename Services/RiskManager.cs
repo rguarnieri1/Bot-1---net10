@@ -34,7 +34,9 @@ public class RiskManager
         decimal entryPrice,
         decimal volatilityPercent,
         List<Trade> openTrades,
-        decimal currentAccountValue)
+        decimal currentAccountValue,
+        bool isLong = true,
+        decimal strategyStopLoss = 0m)
     {
         var result = new PositionSizingResult
         {
@@ -44,16 +46,20 @@ public class RiskManager
             Reason = ""
         };
 
-        // 1️⃣ Calcola stop loss a 1.5%
-        var stopLossPercent = 0.015m;
-        var stopLossPrice = entryPrice * (1 - stopLossPercent);
-        var riskPerUnit = entryPrice - stopLossPrice;
+        // 1️⃣ Stop loss: quello della strategia se fornito, altrimenti 1.5% fisso.
+        // Per i long lo stop sta sotto l'entry, per gli short sopra.
+        var stopLossPrice = strategyStopLoss > 0
+            ? strategyStopLoss
+            : (isLong ? entryPrice * (1 - 0.015m) : entryPrice * (1 + 0.015m));
+        var riskPerUnit = isLong ? entryPrice - stopLossPrice : stopLossPrice - entryPrice;
 
         if (riskPerUnit <= 0)
         {
             result.Reason = "Stop loss calculation error";
             return result;
         }
+
+        var stopLossPercent = riskPerUnit / entryPrice;
 
         // 2️⃣ Calcola position size (in unità dell'asset) basato su rischio fisso
         var positionSize = _riskPerTrade / riskPerUnit;
@@ -68,10 +74,9 @@ public class RiskManager
             positionSize = maxPositionValue / entryPrice;
         }
 
-        // 4️⃣ Calcola target a 3%
-        var targetPercent = 0.03m;
-        var targetPrice = entryPrice * (1 + targetPercent);
-        var profitPerUnit = targetPrice - entryPrice;
+        // 4️⃣ Target a distanza rischio × R:R (2:1 di default), nella direzione del trade
+        var profitPerUnit = riskPerUnit * _minRewardRatio;
+        var targetPrice = isLong ? entryPrice + profitPerUnit : entryPrice - profitPerUnit;
 
         // 5️⃣ Verifica numero massimo di trade simultanei
         if (openTrades.Count >= MaxConcurrentTrades)
@@ -126,12 +131,13 @@ public class RiskManager
         decimal entryPrice,
         decimal exitPrice,
         decimal positionSize,
-        bool isWinningTrade)
+        bool isWinningTrade,
+        bool isLong = true)
     {
         var result = new ProfitCalculation();
 
-        // Profitto/Perdita lordo
-        var priceChange = exitPrice - entryPrice;
+        // Profitto/Perdita lordo (per gli short si guadagna quando il prezzo scende)
+        var priceChange = isLong ? exitPrice - entryPrice : entryPrice - exitPrice;
         var profitLoss = priceChange * positionSize;
 
         // Commissioni (entry + exit)

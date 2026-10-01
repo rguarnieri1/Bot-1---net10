@@ -1,3 +1,4 @@
+using System.Globalization;
 using Newtonsoft.Json;
 using BotCripto.Models;
 
@@ -134,7 +135,7 @@ public class CryptoDataService
                     if (ticker.i.EndsWith("_USDT") || ticker.i.EndsWith("_USD"))
                     {
                         var symbol = ticker.i.Replace("_USDT", "").Replace("_USD", "");
-                        var price = decimal.Parse(ticker.a);
+                        var price = decimal.Parse(ticker.a, NumberStyles.Float, CultureInfo.InvariantCulture);
 
                         if (price > 0)
                         {
@@ -153,6 +154,10 @@ public class CryptoDataService
                     continue;
                 }
             }
+
+            // X_USDT e X_USD danno lo stesso simbolo: ne teniamo uno solo, altrimenti ogni simbolo
+            // verrebbe analizzato (e nel backtest tradato) due volte
+            result = result.GroupBy(c => c.Symbol).Select(g => g.First()).ToList();
 
             return result.Count > 0 ? result.OrderByDescending(c => c.CurrentPrice).Take(500).ToList() : null;
         }
@@ -189,7 +194,7 @@ public class CryptoDataService
                     if (symbol.EndsWith("USDT"))
                     {
                         var symbolName = symbol.Replace("USDT", "");
-                        var price = decimal.Parse((string)ticker.lastPrice);
+                        var price = decimal.Parse((string)ticker.lastPrice, NumberStyles.Float, CultureInfo.InvariantCulture);
 
                         if (price > 0)
                         {
@@ -245,6 +250,140 @@ public class CryptoDataService
         return new List<Candle>();
     }
 
+    // Storico più lungo delle 300 candele di GetCandlesAsync: scarica da Crypto.com (API exchange/v1)
+    // a pagine da 300 candele andando indietro con end_ts, fino a coprire [from, to].
+    public async Task<List<Candle>> GetHistoricalCandlesAsync(string symbol, string interval, DateTime from, DateTime to)
+    {
+        var all = new Dictionary<DateTime, Candle>();
+        var endTs = new DateTimeOffset(DateTime.SpecifyKind(to, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+
+        for (int page = 0; page < 50; page++)
+        {
+            try
+            {
+                await RateLimitDelay();
+                var url = $"https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name={symbol}_USDT&timeframe={ConvertInterval(interval)}&count=300&end_ts={endTs}";
+                var response = await _httpClient.GetAsync(url);
+                if (!response.IsSuccessStatusCode)
+                    break;
+
+                var data = JsonConvert.DeserializeObject<CryptoComCandleResponse>(await response.Content.ReadAsStringAsync());
+                if (data?.Result?.Data == null || data.Result.Data.Count == 0)
+                    break;
+
+                var pageCandles = new List<Candle>();
+                foreach (var candleData in data.Result.Data)
+                {
+                    try
+                    {
+                        pageCandles.Add(new Candle
+                        {
+                            Time = UnixTimeStampToDateTime(candleData.Time),
+                            Open = decimal.Parse(candleData.Open, NumberStyles.Float, CultureInfo.InvariantCulture),
+                            High = decimal.Parse(candleData.High, NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Low = decimal.Parse(candleData.Low, NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Close = decimal.Parse(candleData.Close, NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Volume = decimal.Parse(candleData.Volume, NumberStyles.Float, CultureInfo.InvariantCulture)
+                        });
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
+                if (pageCandles.Count == 0)
+                    break;
+
+                int added = 0;
+                foreach (var c in pageCandles)
+                    if (all.TryAdd(c.Time, c))
+                        added++;
+
+                var earliest = pageCandles.Min(c => c.Time);
+                if (added == 0 || earliest <= from)
+                    break;
+
+                endTs = new DateTimeOffset(earliest).ToUnixTimeMilliseconds() - 1;
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        var result = all.Values.Where(c => c.Time >= from && c.Time <= to).OrderBy(c => c.Time).ToList();
+        if (result.Count >= 50)
+            return result;
+
+        // Fallback (come GetCandlesAsync): simboli non quotati in USDT su Crypto.com, scaricati da Bybit
+        return await TryGetBybitHistoricalCandles(symbol, interval, from, to) ?? result;
+    }
+
+    private async Task<List<Candle>?> TryGetBybitHistoricalCandles(string symbol, string interval, DateTime from, DateTime to)
+    {
+        var all = new Dictionary<DateTime, Candle>();
+        var endTs = new DateTimeOffset(DateTime.SpecifyKind(to, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+
+        for (int page = 0; page < 20; page++)
+        {
+            try
+            {
+                await RateLimitDelay();
+                var url = $"{BybitBaseUrl}/market/kline?category=spot&symbol={symbol}USDT&interval={ConvertToBybitInterval(interval)}&limit=1000&end={endTs}";
+                var response = await _httpClient.GetAsync(url);
+                if (!response.IsSuccessStatusCode)
+                    break;
+
+                dynamic data = JsonConvert.DeserializeObject(await response.Content.ReadAsStringAsync());
+                if (data?.result?.list == null)
+                    break;
+
+                var pageCandles = new List<Candle>();
+                foreach (var kline in data.result.list)
+                {
+                    try
+                    {
+                        pageCandles.Add(new Candle
+                        {
+                            Time = UnixTimeStampToDateTime(long.Parse((string)kline[0])),
+                            Open = decimal.Parse((string)kline[1], NumberStyles.Float, CultureInfo.InvariantCulture),
+                            High = decimal.Parse((string)kline[2], NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Low = decimal.Parse((string)kline[3], NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Close = decimal.Parse((string)kline[4], NumberStyles.Float, CultureInfo.InvariantCulture),
+                            Volume = decimal.Parse((string)kline[5], NumberStyles.Float, CultureInfo.InvariantCulture)
+                        });
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
+                if (pageCandles.Count == 0)
+                    break;
+
+                int added = 0;
+                foreach (var c in pageCandles)
+                    if (all.TryAdd(c.Time, c))
+                        added++;
+
+                var earliest = pageCandles.Min(c => c.Time);
+                if (added == 0 || earliest <= from)
+                    break;
+
+                endTs = new DateTimeOffset(earliest).ToUnixTimeMilliseconds() - 1;
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        var result = all.Values.Where(c => c.Time >= from && c.Time <= to).OrderBy(c => c.Time).ToList();
+        return result.Count > 0 ? result : null;
+    }
+
     private async Task<List<Candle>> TryGetCryptoComCandles(string symbol, string interval, int limit)
     {
         try
@@ -271,11 +410,11 @@ public class CryptoDataService
                     candles.Add(new Candle
                     {
                         Time = UnixTimeStampToDateTime(candleData.Time),
-                        Open = decimal.Parse(candleData.Open),
-                        High = decimal.Parse(candleData.High),
-                        Low = decimal.Parse(candleData.Low),
-                        Close = decimal.Parse(candleData.Close),
-                        Volume = decimal.Parse(candleData.Volume)
+                        Open = decimal.Parse(candleData.Open, NumberStyles.Float, CultureInfo.InvariantCulture),
+                        High = decimal.Parse(candleData.High, NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Low = decimal.Parse(candleData.Low, NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Close = decimal.Parse(candleData.Close, NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Volume = decimal.Parse(candleData.Volume, NumberStyles.Float, CultureInfo.InvariantCulture)
                     });
                 }
                 catch
@@ -319,11 +458,11 @@ public class CryptoDataService
                     candles.Add(new Candle
                     {
                         Time = UnixTimeStampToDateTime(long.Parse((string)kline[0])),
-                        Open = decimal.Parse((string)kline[1]),
-                        High = decimal.Parse((string)kline[2]),
-                        Low = decimal.Parse((string)kline[3]),
-                        Close = decimal.Parse((string)kline[4]),
-                        Volume = decimal.Parse((string)kline[7])
+                        Open = decimal.Parse((string)kline[1], NumberStyles.Float, CultureInfo.InvariantCulture),
+                        High = decimal.Parse((string)kline[2], NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Low = decimal.Parse((string)kline[3], NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Close = decimal.Parse((string)kline[4], NumberStyles.Float, CultureInfo.InvariantCulture),
+                        Volume = decimal.Parse((string)kline[5], NumberStyles.Float, CultureInfo.InvariantCulture)
                     });
                 }
                 catch

@@ -7,6 +7,15 @@ namespace BotCripto.Services;
 public class BacktestService
 {
     private const int WarmupCandles = 60; // candele minime richieste dalla strategia prima di poter generare segnali
+    private const int WarmupDays = 20;    // storico scaricato prima di startDate per il calcolo degli indicatori
+    private const int LookbackCandles = 300; // candele passate alla strategia a ogni passo (come nel download standard)
+
+    // Ultime LookbackCandles candele fino a idx incluso
+    private static List<Candle> Window(List<Candle> candles, int idx)
+    {
+        var start = Math.Max(0, idx + 1 - LookbackCandles);
+        return candles.GetRange(start, idx + 1 - start);
+    }
 
     private readonly CryptoDataService _dataService;
     private readonly RiskManager _riskManager;
@@ -23,10 +32,13 @@ public class BacktestService
             riskPercentPerTrade: 0.02m,
             rewardRiskRatio: 2.0m,
             maxPositionSizePercent: 0.10m,
-            commissionsPercent: 0.6m,
-            taxRate: 0.26m
+            commissionsPercent: 0.25m,
+            taxRate: TaxRate
         );
     }
+
+    // Imposta sulle plusvalenze crypto: si applica al saldo netto del periodo (le perdite compensano i guadagni)
+    private const decimal TaxRate = 0.26m;
 
     // Esegue davvero la strategia EMA Ribbon + RiskManager candela per candela su dati storici reali
     // (Crypto.com/Bybit), aprendo e chiudendo posizioni quando stop loss o target vengono toccati.
@@ -54,114 +66,182 @@ public class BacktestService
 
         int totalSignals = 0;
         int totalFiltered = 0;
+        int skippedForCapital = 0;
         int candleSetsAnalyzed = 0;
+        int closedAtEnd = 0;
+        int maxConcurrent = 0;
         DateTime? earliestTestedCandle = null;
         DateTime? latestTestedCandle = null;
 
+        // Regime BTC per ogni candela: calcolato solo sulle candele BTC disponibili fino a quel momento
+        var historyFrom = startDate.AddDays(-WarmupDays);
+        var btcCandles = await _dataService.GetHistoricalCandlesAsync("BTC", timeframe, historyFrom, endDate);
+        var btcRegime = new Dictionary<DateTime, bool?>();
+        for (int i = 0; i < btcCandles.Count; i++)
+            btcRegime[btcCandles[i].Time] = EmaRibbonTrendFollowingStrategy.IsBtcBullish(Window(btcCandles, i));
+
+        // 1) Scarica tutte le candele prima di simulare: il portafoglio va simulato in ordine cronologico
+        //    su tutti i simboli insieme, per sapere in ogni momento quanto capitale è già impegnato.
+        var candlesBySymbol = new Dictionary<string, List<Candle>>();
+        var indexBySymbol = new Dictionary<string, Dictionary<DateTime, int>>();
         foreach (var symbol in symbols)
         {
             try
             {
-                var candles = await _dataService.GetCandlesAsync(symbol, timeframe, 300);
+                var candles = await _dataService.GetHistoricalCandlesAsync(symbol, timeframe, historyFrom, endDate);
                 if (candles.Count < WarmupCandles + 20)
-                {
                     continue; // troppo pochi dati per un warmup + una finestra di test minima
-                }
 
                 candles = candles.OrderBy(c => c.Time).ToList();
+                candlesBySymbol[symbol] = candles;
+                indexBySymbol[symbol] = candles.Select((c, i) => (c.Time, i)).ToDictionary(x => x.Time, x => x.i);
                 candleSetsAnalyzed++;
-
-                Trade? openTrade = null;
-                bool openIsLong = false;
-                decimal openStopLoss = 0m;
-                decimal openTarget = 0m;
-                decimal openPositionSize = 0m;
-
-                for (int i = WarmupCandles; i < candles.Count; i++)
-                {
-                    var currentCandle = candles[i];
-                    if (currentCandle.Time > endDate)
-                        break;
-
-                    var inTestWindow = currentCandle.Time >= startDate;
-
-                    // 1) Se c'è una posizione aperta su questo simbolo, verifica se stop/target sono stati toccati
-                    if (openTrade != null)
-                    {
-                        bool hitStop = openIsLong ? currentCandle.Low <= openStopLoss : currentCandle.High >= openStopLoss;
-                        bool hitTarget = openIsLong ? currentCandle.High >= openTarget : currentCandle.Low <= openTarget;
-
-                        if (hitStop || hitTarget)
-                        {
-                            // Se in una stessa candela vengono toccati entrambi, assumiamo lo stop loss (ipotesi conservativa)
-                            var exitPrice = hitStop ? openStopLoss : openTarget;
-                            var isWin = !hitStop;
-
-                            var profitCalc = _riskManager.CalculateProfitAndTaxes(
-                                openTrade.EntryPrice, exitPrice, openPositionSize, isWin);
-
-                            openTrade.ExitPrice = exitPrice;
-                            openTrade.CloseTime = currentCandle.Time;
-                            openTrade.Status = "Closed";
-                            openTrade.Profit = profitCalc.NetProfit;
-                            openTrade.ProfitPercentage = profitCalc.ProfitPercent;
-
-                            backtestResult.Trades.Add(openTrade);
-                            openTrade = null;
-                        }
-                    }
-
-                    // 2) Se non c'è (più) una posizione aperta, cerca un nuovo segnale
-                    //    (i nuovi trade si aprono solo dentro la finestra [startDate, endDate] richiesta)
-                    if (openTrade == null && inTestWindow)
-                    {
-                        var lookback = candles.Take(i + 1).ToList();
-                        var analysis = _strategy.Analyze(symbol, lookback);
-
-                        if (analysis.IsSignal)
-                        {
-                            totalSignals++;
-
-                            var sizing = _riskManager.CalculatePosition(
-                                symbol,
-                                currentCandle.Close,
-                                0m,
-                                new List<Trade>(),
-                                _initialCapital);
-
-                            if (sizing.IsValid)
-                            {
-                                earliestTestedCandle ??= currentCandle.Time;
-                                latestTestedCandle = currentCandle.Time;
-
-                                openIsLong = analysis.Signal.Contains("BUY");
-                                openStopLoss = sizing.StopLossPrice;
-                                openTarget = sizing.TargetPrice;
-                                openPositionSize = sizing.PositionSize;
-                                openTrade = new Trade
-                                {
-                                    Symbol = symbol,
-                                    OpenTime = currentCandle.Time,
-                                    EntryPrice = currentCandle.Close,
-                                    Strategy = analysis.StrategyName,
-                                    Status = "Open"
-                                };
-                            }
-                            else
-                            {
-                                totalFiltered++;
-                            }
-                        }
-                    }
-                }
-
-                // Una posizione ancora aperta a fine dati storici non ha un esito: la scartiamo
-                // dalle metriche (che considerano solo i trade "Closed"), non viene aggiunta ai risultati.
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"   ⚠️  {symbol}: {ex.Message}");
             }
+        }
+
+        // 2) Simulazione di portafoglio: equity = capitale iniziale + P&L realizzato (al netto delle commissioni).
+        //    Una nuova posizione si apre solo se il suo valore entra nel capitale non ancora impegnato (niente leva).
+        var openPositions = new Dictionary<string, OpenPosition>();
+        decimal realizedPnl = 0m;
+        decimal peakEquity = _initialCapital;
+        decimal maxDrawdown = 0m;
+
+        void ClosePosition(string symbol, decimal exitPrice, DateTime time, bool isWin)
+        {
+            var pos = openPositions[symbol];
+            var profitCalc = _riskManager.CalculateProfitAndTaxes(
+                pos.Trade.EntryPrice, exitPrice, pos.Size, isWin, pos.IsLong);
+
+            pos.Trade.ExitPrice = exitPrice;
+            pos.Trade.CloseTime = time;
+            pos.Trade.Status = "Closed";
+            pos.Trade.Profit = profitCalc.NetProfitBeforeTax; // tasse calcolate sul saldo netto del periodo, non per trade
+            pos.Trade.ProfitPercentage = profitCalc.ProfitPercent;
+
+            backtestResult.Trades.Add(pos.Trade);
+            realizedPnl += profitCalc.NetProfitBeforeTax;
+            openPositions.Remove(symbol);
+        }
+
+        var timeline = candlesBySymbol.Values
+            .SelectMany(c => c.Skip(WarmupCandles).Select(x => x.Time))
+            .Where(t => t <= endDate)
+            .Distinct()
+            .OrderBy(t => t)
+            .ToList();
+
+        foreach (var time in timeline)
+        {
+            // a) Posizioni aperte: verifica se stop/target sono stati toccati in questa candela
+            foreach (var symbol in openPositions.Keys.ToList())
+            {
+                if (!indexBySymbol[symbol].TryGetValue(time, out var idx))
+                    continue;
+
+                var pos = openPositions[symbol];
+                var candle = candlesBySymbol[symbol][idx];
+                bool hitStop = pos.IsLong ? candle.Low <= pos.StopLoss : candle.High >= pos.StopLoss;
+                bool hitTarget = pos.IsLong ? candle.High >= pos.Target : candle.Low <= pos.Target;
+
+                // Se in una stessa candela vengono toccati entrambi, assumiamo lo stop loss (ipotesi conservativa)
+                if (hitStop || hitTarget)
+                    ClosePosition(symbol, hitStop ? pos.StopLoss : pos.Target, time, !hitStop);
+            }
+
+            // b) Nuovi segnali (solo dentro la finestra richiesta), dal più forte al più debole:
+            //    quando il capitale non basta per tutti, entrano prima quelli con SignalStrength maggiore
+            if (time >= startDate)
+            {
+                var candidates = new List<(string symbol, Candle candle, AnalysisResult analysis)>();
+                foreach (var (symbol, candles) in candlesBySymbol)
+                {
+                    if (openPositions.ContainsKey(symbol) || !indexBySymbol[symbol].TryGetValue(time, out var idx) || idx < WarmupCandles)
+                        continue;
+
+                    var analysis = _strategy.Analyze(symbol, Window(candles, idx), btcRegime.GetValueOrDefault(time));
+                    if (analysis.IsSignal)
+                        candidates.Add((symbol, candles[idx], analysis));
+                }
+
+                foreach (var (symbol, candle, analysis) in candidates.OrderByDescending(c => c.analysis.Indicators.GetValueOrDefault("SignalStrength")))
+                {
+                    totalSignals++;
+
+                    var equity = _initialCapital + realizedPnl;
+                    var isLong = analysis.Signal.Contains("BUY");
+                    var sizing = _riskManager.CalculatePosition(
+                        symbol,
+                        candle.Close,
+                        0m,
+                        openPositions.Values.Select(p => p.Trade).ToList(),
+                        equity,
+                        isLong,
+                        analysis.Indicators.GetValueOrDefault("StopLoss"));
+
+                    if (!sizing.IsValid)
+                    {
+                        totalFiltered++;
+                        continue;
+                    }
+
+                    var committed = openPositions.Values.Sum(p => p.Trade.EntryPrice * p.Size);
+                    var positionValue = candle.Close * sizing.PositionSize;
+                    if (committed + positionValue > equity)
+                    {
+                        skippedForCapital++;
+                        continue;
+                    }
+
+                    if (earliestTestedCandle == null || time < earliestTestedCandle)
+                        earliestTestedCandle = time;
+                    if (latestTestedCandle == null || time > latestTestedCandle)
+                        latestTestedCandle = time;
+
+                    openPositions[symbol] = new OpenPosition
+                    {
+                        IsLong = isLong,
+                        StopLoss = sizing.StopLossPrice,
+                        Target = sizing.TargetPrice,
+                        Size = sizing.PositionSize,
+                        Trade = new Trade
+                        {
+                            Symbol = symbol,
+                            OpenTime = time,
+                            EntryPrice = candle.Close,
+                            Strategy = analysis.StrategyName,
+                            Status = "Open"
+                        }
+                    };
+                }
+
+                maxConcurrent = Math.Max(maxConcurrent, openPositions.Count);
+            }
+
+            // c) Equity a valore di mercato (realizzato + non realizzato) per il drawdown massimo
+            decimal unrealized = 0m;
+            foreach (var (symbol, pos) in openPositions)
+            {
+                var candles = candlesBySymbol[symbol];
+                var lastClose = candles.LastOrDefault(c => c.Time <= time)?.Close ?? pos.Trade.EntryPrice;
+                unrealized += _riskManager.CalculateProfitAndTaxes(pos.Trade.EntryPrice, lastClose, pos.Size, false, pos.IsLong).NetProfitBeforeTax;
+            }
+            var markedEquity = _initialCapital + realizedPnl + unrealized;
+            peakEquity = Math.Max(peakEquity, markedEquity);
+            if (peakEquity > 0)
+                maxDrawdown = Math.Max(maxDrawdown, (peakEquity - markedEquity) / peakEquity);
+        }
+
+        // Una posizione ancora aperta a fine periodo viene chiusa al prezzo dell'ultima candela
+        // testata (mark-to-market), altrimenti le perdite/guadagni non realizzati sparirebbero dalle metriche.
+        foreach (var symbol in openPositions.Keys.ToList())
+        {
+            var lastCandle = candlesBySymbol[symbol].Last(c => c.Time <= endDate);
+            ClosePosition(symbol, lastCandle.Close, lastCandle.Time, false);
+            closedAtEnd++;
         }
 
         backtestResult.Metrics = _riskManager.CalculatePerformanceMetrics(
@@ -174,8 +254,11 @@ public class BacktestService
         backtestResult.CandleSetsAnalyzed = candleSetsAnalyzed;
         backtestResult.ActualStartDate = earliestTestedCandle;
         backtestResult.ActualEndDate = latestTestedCandle;
+        backtestResult.SignalsSkippedForCapital = skippedForCapital;
+        backtestResult.MaxConcurrentPositions = maxConcurrent;
+        backtestResult.MaxDrawdownPercent = maxDrawdown * 100;
 
-        Console.WriteLine($"\n✅ BACKTEST COMPLETATO ({backtestResult.Trades.Count} trade chiusi da {candleSetsAnalyzed} simboli con dati sufficienti)");
+        Console.WriteLine($"\n✅ BACKTEST COMPLETATO ({backtestResult.Trades.Count} trade chiusi da {candleSetsAnalyzed} simboli con dati sufficienti, di cui {closedAtEnd} chiusi a fine periodo al prezzo di mercato)");
 
         return backtestResult;
     }
@@ -204,11 +287,21 @@ public class BacktestService
         var totalCandidati = result.TotalSignalsGenerated;
         if (totalCandidati > 0)
             sb.AppendLine($"   • Tasso di scarto RiskManager: {(decimal)result.TotalSignalsFiltered / totalCandidati * 100:F1}%");
+        sb.AppendLine($"   • Segnali saltati per capitale già impegnato: {result.SignalsSkippedForCapital}");
+        sb.AppendLine($"   • Posizioni aperte contemporaneamente (max): {result.MaxConcurrentPositions}");
 
-        sb.AppendLine($"\n💼 ACCOUNT METRICS (al netto di commissioni e tasse):");
+        var pnlBeforeTax = result.Metrics.TotalProfit;
+        var taxes = pnlBeforeTax > 0 ? pnlBeforeTax * TaxRate : 0m;
+        var netPnl = pnlBeforeTax - taxes;
+
+        sb.AppendLine($"\n💼 ACCOUNT METRICS:");
         sb.AppendLine($"   • Capitale iniziale: €{result.InitialCapital:F2}");
-        sb.AppendLine($"   • P&L netto totale: €{result.Metrics.TotalProfit:F2}");
-        sb.AppendLine($"   • ROI netto: {result.Metrics.ROI:F2}%");
+        sb.AppendLine($"   • P&L al netto delle commissioni (prima delle tasse): €{pnlBeforeTax:F2}");
+        sb.AppendLine($"   • Tasse ({TaxRate:P0} sul saldo netto positivo del periodo): €{-taxes:F2}");
+        sb.AppendLine($"   • P&L netto totale: €{netPnl:F2}");
+        sb.AppendLine($"   • ROI netto: {netPnl / result.InitialCapital * 100:F2}%");
+        sb.AppendLine($"   • Capitale finale (dopo le tasse): €{result.InitialCapital + netPnl:F2}");
+        sb.AppendLine($"   • Drawdown massimo (a valore di mercato): {result.MaxDrawdownPercent:F2}%");
 
         sb.AppendLine($"\n🎯 PERFORMANCE METRICS:");
         sb.AppendLine($"   • Trade chiusi: {result.Metrics.TotalTrades}");
@@ -216,13 +309,28 @@ public class BacktestService
         sb.AppendLine($"   • Perdenti: {result.Metrics.LosingTrades}");
         sb.AppendLine($"   • Win Rate: {result.Metrics.WinRate:P2}");
         sb.AppendLine($"   • Profit Factor: {result.Metrics.ProfitFactor:F2}");
-        sb.AppendLine($"   • Expectancy: €{result.Metrics.Expectancy:F2}/trade (netto)");
+        sb.AppendLine($"   • Expectancy: €{result.Metrics.Expectancy:F2}/trade (al netto delle commissioni, prima delle tasse)");
 
-        sb.AppendLine($"\n💰 WIN/LOSS ANALYSIS (nette):");
+        sb.AppendLine($"\n💰 WIN/LOSS ANALYSIS (al netto delle commissioni, prima delle tasse):");
         sb.AppendLine($"   • Vincita media: €{result.Metrics.AverageWin:F2}");
         sb.AppendLine($"   • Perdita media: €{result.Metrics.AverageLoss:F2}");
         sb.AppendLine($"   • Serie massima di vincite consecutive: {result.Metrics.MaxConsecutiveWins}");
         sb.AppendLine($"   • Serie massima di perdite consecutive: {result.Metrics.MaxConsecutiveLosses}");
+
+        var byMonth = result.Trades
+            .Where(t => t.CloseTime.HasValue)
+            .GroupBy(t => new DateTime(t.CloseTime!.Value.Year, t.CloseTime.Value.Month, 1))
+            .OrderBy(g => g.Key)
+            .ToList();
+        if (byMonth.Count > 1)
+        {
+            sb.AppendLine($"\n📆 DETTAGLIO MENSILE (per data di chiusura, prima delle tasse):");
+            foreach (var g in byMonth)
+            {
+                var wins = g.Count(t => t.Profit > 0);
+                sb.AppendLine($"   • {g.Key:yyyy-MM}: {g.Count(),4} trade | win rate {(decimal)wins / g.Count():P1} | P&L €{g.Sum(t => t.Profit ?? 0):F2}");
+            }
+        }
 
         sb.AppendLine("\n" + new string('═', 80) + "\n");
 
@@ -252,6 +360,15 @@ public class BacktestService
     }
 }
 
+internal class OpenPosition
+{
+    public bool IsLong { get; set; }
+    public decimal StopLoss { get; set; }
+    public decimal Target { get; set; }
+    public decimal Size { get; set; }
+    public Trade Trade { get; set; } = new();
+}
+
 public class BacktestResult
 {
     public DateTime StartDate { get; set; }
@@ -264,6 +381,9 @@ public class BacktestResult
     public decimal InitialCapital { get; set; }
     public int TotalSignalsGenerated { get; set; }
     public int TotalSignalsFiltered { get; set; }
+    public int SignalsSkippedForCapital { get; set; }
+    public int MaxConcurrentPositions { get; set; }
+    public decimal MaxDrawdownPercent { get; set; }
     public List<Trade> Trades { get; set; } = new();
     public List<AnalysisResult> AnalysisResults { get; set; } = new();
     public PerformanceMetrics Metrics { get; set; } = new();

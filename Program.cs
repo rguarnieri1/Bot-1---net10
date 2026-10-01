@@ -18,10 +18,22 @@ if (isBacktestMode)
 }
 else if (isRealBacktestMode)
 {
-    int days = 30;
-    if (cmdArgs.Length > 2 && int.TryParse(cmdArgs[2], out var parsedDays))
-        days = parsedDays;
-    await RunRealBacktestAsync(days);
+    // --backtest-real [giorni]  oppure  --backtest-real yyyy-MM-dd yyyy-MM-dd
+    var endDate = DateTime.UtcNow;
+    var startDate = endDate.AddDays(-30);
+    var dateStyle = System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal;
+    if (cmdArgs.Length > 3
+        && DateTime.TryParseExact(cmdArgs[2], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var fromDate)
+        && DateTime.TryParseExact(cmdArgs[3], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, dateStyle, out var toDate))
+    {
+        startDate = fromDate;
+        endDate = toDate.AddDays(1).AddTicks(-1); // data finale inclusa
+    }
+    else if (cmdArgs.Length > 2 && int.TryParse(cmdArgs[2], out var parsedDays))
+    {
+        startDate = endDate.AddDays(-parsedDays);
+    }
+    await RunRealBacktestAsync(startDate, endDate);
 }
 else
 {
@@ -61,9 +73,9 @@ async Task RunLiveAsync()
     }
 }
 
-async Task RunRealBacktestAsync(int days)
+async Task RunRealBacktestAsync(DateTime startDate, DateTime endDate)
 {
-    Console.WriteLine($"\n🔍 MODALITA' BACKTEST SU DATI STORICI REALI ATTIVATA ({days} giorni)\n");
+    Console.WriteLine($"\n🔍 MODALITA' BACKTEST SU DATI STORICI REALI ATTIVATA ({startDate:yyyy-MM-dd} → {endDate:yyyy-MM-dd})\n");
 
     var backtestService = new BacktestService(initialCapital: 1000m);
 
@@ -72,9 +84,6 @@ async Task RunRealBacktestAsync(int days)
         var dataService = new CryptoDataService();
         var cryptos = await dataService.GetLargeCapCryptocurrenciesAsync();
         var symbols = cryptos.Select(c => c.Symbol).ToList();
-
-        var endDate = DateTime.UtcNow;
-        var startDate = endDate.AddDays(-days);
 
         var result = await backtestService.RunBacktestAsync(symbols, startDate, endDate, "4h");
         backtestService.PrintBacktestReport(result);

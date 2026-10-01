@@ -6,13 +6,26 @@ public class EmaRibbonTrendFollowingStrategy
 {
     // Configurazione ottimizzata per win rate 60-62%
     private readonly int[] _emaPeriods = { 5, 10, 20, 30 };
-    private readonly decimal _volumeMultiplierThreshold = 1.2m;  // Volume almeno 20% sopra media
+    private readonly decimal _volumeMultiplierThreshold = 1.5m;  // Volume almeno 50% sopra media
+    private const int BtcRegimeEmaPeriod = 50;
     private readonly decimal _bodyStrengthThreshold = 0.6m;      // Corpo deve essere 60% della candela
     private readonly int _trendConfirmationCandles = 2;           // Ultime 2 candele devono confermare
     private readonly decimal _rsiOverboughtLevel = 70m;
     private readonly decimal _rsiOversoldLevel = 30m;
 
-    public AnalysisResult Analyze(string symbol, List<Candle> candles)
+    // Regime di mercato: true se BTC chiude sopra la sua EMA50 sull'ultima candela, false se sotto,
+    // null se i dati BTC non sono sufficienti.
+    public static bool? IsBtcBullish(List<Candle> btcCandles)
+    {
+        var ema = TechnicalIndicators.CalculateEMA(btcCandles.Select(c => c.Close).ToList(), BtcRegimeEmaPeriod);
+        if (ema.Count == 0)
+            return null;
+        return btcCandles.Last().Close > ema.Last();
+    }
+
+    // btcBullish: regime BTC (vedi IsBtcBullish). Long solo con BTC rialzista, short solo con BTC ribassista;
+    // se il regime è sconosciuto (null) il segnale viene scartato.
+    public AnalysisResult Analyze(string symbol, List<Candle> candles, bool? btcBullish)
     {
         var result = new AnalysisResult
         {
@@ -73,7 +86,13 @@ public class EmaRibbonTrendFollowingStrategy
         var avgVolume = volumes.TakeLast(20).Average();
         var recentVolume = volumes.Last();
 
-        if (recentVolume < avgVolume * 0.8m)
+        if (avgVolume <= 0)
+        {
+            result.Signal = "Rejected - No volume data";
+            return result;
+        }
+
+        if (recentVolume < avgVolume * _volumeMultiplierThreshold)
         {
             result.Signal = "Rejected - Volume insufficient";
             return result;
@@ -184,19 +203,26 @@ public class EmaRibbonTrendFollowingStrategy
             return result;
         }
 
+        // 7️⃣ BTC REGIME FILTER - segui la direzione del mercato
+        if (btcBullish == null || btcBullish != isUptrendAligned)
+        {
+            result.Signal = "Rejected - Against BTC regime";
+            return result;
+        }
+
         // ✅ SIGNAL GENERATED
         if (isUptrendAligned)
         {
             result.IsSignal = true;
             result.Signal = "🟢 BUY - EMA Ribbon Bullish (Trend + Candle + Volume)";
-            result.Indicators["StopLoss"] = Math.Min(lastEma20, lastCandle.Low) * 0.98m;
+            result.Indicators["StopLoss"] = Math.Min(lastEma20, lastCandle.Low) * 0.995m;
             result.Indicators["Target"] = currentPrice + (currentPrice - result.Indicators["StopLoss"]) * 2;
         }
         else
         {
             result.IsSignal = true;
             result.Signal = "🔴 SELL - EMA Ribbon Bearish (Trend + Candle + Volume)";
-            result.Indicators["StopLoss"] = Math.Max(lastEma20, lastCandle.High) * 1.02m;
+            result.Indicators["StopLoss"] = Math.Max(lastEma20, lastCandle.High) * 1.005m;
             result.Indicators["Target"] = currentPrice - (result.Indicators["StopLoss"] - currentPrice) * 2;
         }
 

@@ -31,7 +31,7 @@ public class BotSchedulerService
             riskPercentPerTrade: 0.02m,      // 2% rischio per trade
             rewardRiskRatio: 2.0m,            // 2:1 R:R
             maxPositionSizePercent: 0.10m,    // Max 10% per trade
-            commissionsPercent: 0.6m,         // 0.6% commissioni
+            commissionsPercent: 0.25m,        // 0.25% commissioni per lato
             taxRate: 0.26m                    // 26% tasse
         );
 
@@ -114,6 +114,11 @@ public class BotSchedulerService
                 _cumulativeRejectionCounts[category] = cc + 1;
             }
 
+            // Regime di mercato BTC per questo ciclo (filtro direzionale della strategia)
+            var btcBullish = EmaRibbonTrendFollowingStrategy.IsBtcBullish(
+                await _dataService.GetCandlesAsync("BTC", "4h", 100));
+            Console.WriteLine($"₿ Regime BTC: {(btcBullish == null ? "sconosciuto (nessun segnale)" : btcBullish.Value ? "rialzista (solo long)" : "ribassista (solo short)")}");
+
             foreach (var crypto in cryptos)
             {
                 try
@@ -132,7 +137,7 @@ public class BotSchedulerService
                     // ✅ STRATEGIA PRINCIPALE: EMA RIBBON TREND FOLLOWING
 
                     // 1️⃣ EMA Ribbon Trend Following + Candle Confirmation (Principale - Win Rate 60-62%)
-                    var emaRibbonResult = _emaRibbonStrategy.Analyze(crypto.Symbol, candles);
+                    var emaRibbonResult = _emaRibbonStrategy.Analyze(crypto.Symbol, candles, btcBullish);
 
                     if (emaRibbonResult.IsSignal)
                     {
@@ -142,7 +147,9 @@ public class BotSchedulerService
                             crypto.CurrentPrice,
                             volatilityPercent,
                             openTrades,
-                            _currentAccountValue
+                            _currentAccountValue,
+                            emaRibbonResult.Signal.Contains("BUY"),
+                            emaRibbonResult.Indicators.GetValueOrDefault("StopLoss")
                         );
 
                         if (positionResult.IsValid)
@@ -242,6 +249,10 @@ public class BotSchedulerService
             return "Strategia: RSI estremo";
         if (signal.Contains("EMA breakout"))
             return "Strategia: nessun breakout EMA confermato";
+        if (signal.Contains("BTC regime"))
+            return "Strategia: contro il regime BTC";
+        if (signal.Contains("No volume data"))
+            return "Strategia: volume assente";
         if (signal == "No Signal")
             return "Strategia: dati insufficienti per il calcolo";
         return $"Strategia: altro ({signal})";
