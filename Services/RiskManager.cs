@@ -19,7 +19,7 @@ public class RiskManager
         decimal riskPercentPerTrade = 0.01m,
         decimal rewardRiskRatio = 2.0m,
         decimal maxPositionSizePercent = 0.10m,
-        decimal commissionsPercent = 0.10m,
+        decimal commissionsPercent = 1.0m,
         decimal taxRate = 0.26m,
         decimal maxPositionValue = decimal.MaxValue)
     {

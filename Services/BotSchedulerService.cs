@@ -43,7 +43,7 @@ public class BotSchedulerService
             riskPercentPerTrade: 0.02m,      // 2% rischio per trade
             rewardRiskRatio: rewardRiskRatio, // take profit = R:R × distanza dello stop
             maxPositionSizePercent: 0.10m,    // Max 10% per trade
-            commissionsPercent: 0.25m,        // 0.25% commissioni per lato
+            commissionsPercent: 1.0m,        // 1% commissioni per lato
             taxRate: 0.26m,                   // 26% tasse
             maxPositionValue: maxTradeAmount  // importo massimo per trade (€)
         );
